@@ -3,6 +3,8 @@
 //! See the `synth` dev repo (`docs/architecture/`) for the design.
 
 pub mod model;
+pub mod modules;
+pub mod processing;
 
 /// Prints a greeting to stdout. Used to smoke-test cross-crate wiring:
 /// the `synth-cli` and `synth-ui` binaries call this and exit.
