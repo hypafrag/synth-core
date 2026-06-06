@@ -1,7 +1,8 @@
 //! synth-core — core library of the synth modular synthesizer platform.
 //!
-//! Architecture phase: no real implementation yet. See the `synth` dev repo
-//! (`docs/architecture/`, `CLAUDE.md`) for the design.
+//! See the `synth` dev repo (`docs/architecture/`) for the design.
+
+pub mod model;
 
 /// Prints a greeting to stdout. Used to smoke-test cross-crate wiring:
 /// the `synth-cli` and `synth-ui` binaries call this and exit.
