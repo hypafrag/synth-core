@@ -1,0 +1,5 @@
+# Rust
+/target/
+**/*.rs.bk
+# Library crate: Cargo.lock is NOT committed (it's a dependency, not a final binary).
+Cargo.lock
