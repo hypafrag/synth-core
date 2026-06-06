@@ -48,6 +48,29 @@ pub enum ParamValue {
     Str(String),
 }
 
+impl ParamValue {
+    /// Numeric value as f64 (`Int` or `Float`).
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            ParamValue::Int(i) => Some(*i as f64),
+            ParamValue::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Numeric value as i64 (`Int`, or a truncated `Float`).
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            ParamValue::Int(i) => Some(*i),
+            ParamValue::Float(f) => Some(*f as i64),
+            _ => None,
+        }
+    }
+}
+
+/// A node's parameter map.
+pub type Params = BTreeMap<String, ParamValue>;
+
 /// A wire from one output port to one input port.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Wire {

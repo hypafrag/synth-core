@@ -20,19 +20,33 @@ pub enum Tail {
     Done,
 }
 
-/// Per-tick IO: input and output sample buffers for one block, indexed by port order.
+/// Per-tick IO: input and output sample buffers for one block, indexed by port order,
+/// plus the engine's sample rate.
 pub struct ProcessCtx<'a> {
     pub frames: usize,
+    pub sample_rate: f32,
+    /// Seconds at which this block's first sample starts. 0.0 for the first block, then
+    /// accumulates. This is **voice-local**: a spawned voice starts at 0.0.
+    pub time: f64,
     pub inputs: &'a [&'a [f32]],
     pub outputs: &'a mut [&'a mut [f32]],
 }
 
 /// A runnable module instance.
 pub trait Module: Send {
-    /// Set sample rate / max block size; allocate here, never in [`Module::process`].
-    fn prepare(&mut self, cfg: &PrepareCfg);
-    /// Clear internal state (phase, filter memory, …).
-    fn reset(&mut self);
+    /// Set sample rate / max block size for allocation. Default: no-op (allocate here, never
+    /// in [`Module::process`]).
+    fn prepare(&mut self, _cfg: &PrepareCfg) {}
+    /// Clear internal state (phase, filter memory, …). Default: no-op.
+    fn reset(&mut self) {}
+    /// Ordered input port names. Default: none.
+    fn input_ports(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Ordered output port names. Default: none.
+    fn output_ports(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Produce one block of output from the inputs; report liveness.
     fn process(&mut self, ctx: &mut ProcessCtx<'_>) -> Tail;
 }
