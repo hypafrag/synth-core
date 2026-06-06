@@ -3,5 +3,6 @@ name = "synth-core"
 version = "0.1.0"
 edition = "2024"
 description = "Core library of the synth modular synthesizer platform."
+license = "MIT OR Apache-2.0"
 
 [dependencies]
