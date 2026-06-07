@@ -48,13 +48,31 @@ pub enum ParamValue {
     Str(String),
 }
 
+/// Convert decibels to a linear gain: `10^(dB/20)`. 0 dB = 1.0, -6 dB ≈ 0.501, +6 dB ≈ 1.995.
+pub fn db_to_linear(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+/// Parse a level string: a number with a `dB`/`db` suffix is read as decibels (converted to
+/// linear gain); otherwise it is parsed as a plain number.
+fn parse_level(s: &str) -> Option<f64> {
+    let t = s.trim();
+    if t.len() >= 2 && t[t.len() - 2..].eq_ignore_ascii_case("db") {
+        let number = t[..t.len() - 2].trim();
+        return number.parse::<f64>().ok().map(db_to_linear);
+    }
+    t.parse::<f64>().ok()
+}
+
 impl ParamValue {
-    /// Numeric value as f64 (`Int` or `Float`).
+    /// Numeric value as f64. `Int`/`Float` directly; a string is parsed as a level — a `dB`
+    /// suffix means decibels (e.g. `"-6dB"` → ~0.501), otherwise a plain number.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             ParamValue::Int(i) => Some(*i as f64),
             ParamValue::Float(f) => Some(*f),
-            _ => None,
+            ParamValue::Str(s) => parse_level(s),
+            ParamValue::Bool(_) => None,
         }
     }
 
@@ -230,5 +248,28 @@ nodes:
         let yaml = patch.to_yaml().expect("emit");
         let again = Patch::from_yaml(&yaml).expect("reparse");
         assert_eq!(patch, again);
+    }
+
+    #[test]
+    fn db_levels() {
+        let db = |s: &str| ParamValue::Str(s.to_string()).as_f64().unwrap();
+        assert!((db("0dB") - 1.0).abs() < 1e-9);
+        assert!((db("-6dB") - 0.501_187).abs() < 1e-4);
+        assert!((db("6 dB") - 1.995_262).abs() < 1e-4);
+        assert!((db("-20DB") - 0.1).abs() < 1e-6);
+        // plain numeric strings still parse
+        assert_eq!(db("0.25"), 0.25);
+        // non-numeric strings are not levels
+        assert_eq!(ParamValue::Str("default".to_string()).as_f64(), None);
+    }
+
+    #[test]
+    fn parses_db_param_from_yaml() {
+        let patch = Patch::from_yaml(
+            "nodes:\n  - id: amp\n    type: const_generator\n    params: { value: -6dB }\n",
+        )
+        .unwrap();
+        let value = patch.nodes[0].params.get("value").unwrap();
+        assert!((value.as_f64().unwrap() - 0.501_187).abs() < 1e-4);
     }
 }
