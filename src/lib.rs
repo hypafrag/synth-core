@@ -6,6 +6,7 @@ pub mod audio;
 pub mod engine;
 pub mod model;
 pub mod modules;
+pub mod plan;
 pub mod processing;
 pub mod registry;
 pub mod wav;
