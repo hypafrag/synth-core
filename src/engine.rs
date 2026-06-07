@@ -302,13 +302,13 @@ wires:
             assert_eq!(device[i * 2], device[i * 2 + 1]);
         }
 
-        // sr=4, freq=1, amp 0.5, time-based phase = 2*pi*(i/4):
-        // i0: sin(0)=0, i1: sin(pi/2)*0.5=0.5, i2: sin(pi)=0, i3: sin(3pi/2)*0.5=-0.5.
+        // sr=4, freq=1, amp 0.5, accumulating phase (increment-then-output, inc = pi/2):
+        // i0: sin(pi/2)*0.5=0.5, i1: sin(pi)=0, i2: sin(3pi/2)*0.5=-0.5, i3: sin(2pi)=0.
         let eps = 1e-5;
-        assert!(device[0].abs() < eps);
-        assert!((device[2] - 0.5).abs() < eps);
-        assert!(device[4].abs() < eps);
-        assert!((device[6] + 0.5).abs() < eps);
+        assert!((device[0] - 0.5).abs() < eps);
+        assert!(device[2].abs() < eps);
+        assert!((device[4] + 0.5).abs() < eps);
+        assert!(device[6].abs() < eps);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::model::Params;
-use crate::modules::{AudioOutput, ConstGenerator, SineGenerator};
+use crate::modules::{AudioOutput, ConstGenerator, Range, SineGenerator};
 use crate::processing::Module;
 
 type Factory = Box<dyn Fn(&Params) -> Result<Box<dyn Module>, String> + Send + Sync>;
@@ -45,6 +45,7 @@ impl Registry {
             "sine_generator",
             Box::new(|_p| Ok(Box::new(SineGenerator::new()))),
         );
+        r.register("range", Box::new(|_p| Ok(Box::new(Range::new()))));
         r.register(
             "audio_output",
             Box::new(|p| Ok(Box::new(AudioOutput::from_params(p)?))),
