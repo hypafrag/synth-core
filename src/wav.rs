@@ -1,13 +1,13 @@
 //! Offline WAV render backend.
 //!
-//! Drives an [`Engine`] block-by-block as fast as possible and writes the interleaved output
+//! Drives a [`PlanEngine`] block-by-block as fast as possible and writes the interleaved output
 //! to a WAV file. This is the offline counterpart to the real-time `audio` backend: the same
 //! engine and the same `audio_output` sink, with the samples going to a file instead of a
 //! device.
 
 use std::path::Path;
 
-use crate::engine::Engine;
+use crate::plan_engine::PlanEngine;
 
 #[derive(Debug)]
 pub struct WavError(String);
@@ -29,7 +29,7 @@ impl From<hound::Error> for WavError {
 const BLOCK: usize = 1024;
 
 /// Render `seconds` of audio from `engine` to a 16-bit PCM WAV at `path`.
-pub fn render_to_wav(mut engine: Engine, path: &Path, seconds: f64) -> Result<(), WavError> {
+pub fn render_to_wav(mut engine: PlanEngine, path: &Path, seconds: f64) -> Result<(), WavError> {
     let sample_rate = engine.sample_rate();
     let channels = engine.channels();
     let total_frames = (seconds.max(0.0) * sample_rate as f64).round() as u64;
@@ -63,7 +63,7 @@ pub fn render_to_wav(mut engine: Engine, path: &Path, seconds: f64) -> Result<()
 mod tests {
     use super::*;
     use crate::model::Patch;
-    use crate::registry::Registry;
+    use crate::module::Registry;
 
     #[test]
     fn renders_pure_tone_wav() {
@@ -87,7 +87,7 @@ wires:
   - { from: [osc, out], to: [out, ch1] }
 "#;
         let patch = Patch::from_yaml(yaml).unwrap();
-        let engine = Engine::build(&patch, &Registry::with_builtins(), 16384).unwrap();
+        let engine = PlanEngine::build(&patch, &Registry::with_builtins(), 16384).unwrap();
 
         let path = std::env::temp_dir().join("synth_core_wav_test.wav");
         render_to_wav(engine, &path, 0.1).unwrap();

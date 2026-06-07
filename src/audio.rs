@@ -1,11 +1,11 @@
 //! Real-time audio output backend (cpal).
 //!
-//! Drives an [`Engine`] from the default output device's callback. The audio device callback
+//! Drives a [`PlanEngine`] from the default output device's callback. The audio device callback
 //! is the single clock (see `docs/architecture/07-execution-and-events.md`).
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::engine::Engine;
+use crate::plan_engine::PlanEngine;
 
 #[derive(Debug)]
 pub enum AudioError {
@@ -28,7 +28,7 @@ impl std::error::Error for AudioError {}
 
 /// Start playing `engine` on the default output device. The returned stream must be kept
 /// alive for audio to keep running.
-pub fn run_default_output(mut engine: Engine) -> Result<cpal::Stream, AudioError> {
+pub fn run_default_output(mut engine: PlanEngine) -> Result<cpal::Stream, AudioError> {
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
 

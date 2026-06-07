@@ -224,6 +224,315 @@ impl Plan {
     }
 }
 
+/// Where a per-voice input reads from, while building a voiced plan.
+#[derive(Clone, Copy)]
+pub enum VoiceSource {
+    /// A shared (mono) record's output: `(shared record index, output port)`.
+    Shared(usize, usize),
+    /// One of the voice source's per-voice outputs for this slot: `(output port)`.
+    SourceOut(usize),
+    /// Another per-voice record within the same slot: `(voice record index, output port)`.
+    Voice(usize, usize),
+    /// Unconnected — the shared zero buffer.
+    Zero,
+}
+
+/// One per-voice record to lay out (stamped once per slot).
+pub struct VoiceRecordSpec {
+    pub fn_index: u32,
+    pub state: Vec<u8>,
+    pub inputs: Vec<VoiceSource>,
+    pub num_outputs: usize,
+}
+
+/// A plan with a voice source: shared (mono) records, then `max_voices` identical slots, each
+/// holding the source's per-voice output buffers plus a copy of the per-voice records.
+///
+/// The walk runs the shared records, then flows through the active slots (disabled slots are
+/// jumped via their first record's skip field). The source writes each active slot's
+/// source-output buffers before the walk; the engine sums the active slots' outputs after it.
+pub struct VoicedPlan {
+    buf: Vec<u8>,
+    block_size: usize,
+    records_start: usize,
+    shared_out_offsets: Vec<u32>,
+    // Voice region:
+    first_record_off: usize,
+    record_stride: usize,
+    terminator_off: usize,
+    source_out_base: usize,
+    source_out_stride: usize,
+    num_source_outputs: usize,
+    /// Within-slot byte offset of each voice record's port-0 output buffer.
+    voice_out_within: Vec<u32>,
+    /// Within-slot byte offset of each voice record's state region.
+    voice_state_within: Vec<u32>,
+    max_voices: usize,
+}
+
+impl VoicedPlan {
+    /// Lay out the shared records, the per-voice slot template, and `max_voices` slots.
+    /// All slots start **disabled** (no voices playing); the engine enables them on allocate.
+    pub fn build(
+        block_size: usize,
+        shared: &[RecordSpec],
+        num_source_outputs: usize,
+        voice: &[VoiceRecordSpec],
+        max_voices: usize,
+    ) -> VoicedPlan {
+        let mut size = align_up(4, BUF_ALIGN);
+        let zero_off = size;
+        size += block_size * F32;
+
+        // Per-slot source-output buffers, kept **outside** the walk path (written by the source,
+        // never read as a record), so the walk flows shared records → voice slots uninterrupted.
+        size = align_up(size, BUF_ALIGN);
+        let source_out_base = size;
+        let source_out_stride = align_up(num_source_outputs * block_size * F32, BUF_ALIGN);
+        size += source_out_stride * max_voices;
+
+        size = align_up(size, RECORD_ALIGN);
+        let records_start = size;
+
+        // Shared records (offsets absolute, like the flat plan).
+        let mut shared_rec_off = Vec::with_capacity(shared.len());
+        let mut shared_out_offsets = Vec::with_capacity(shared.len());
+        for r in shared {
+            shared_rec_off.push(size);
+            let state_off = align_up(size + HEADER_WORDS * 4, STATE_ALIGN);
+            let inputs_off = align_up(state_off + r.state.len(), 4);
+            let outputs_off = align_up(inputs_off + r.inputs.len() * 4, BUF_ALIGN);
+            shared_out_offsets.push(outputs_off as u32);
+            size = align_up(outputs_off + r.num_outputs * block_size * F32, RECORD_ALIGN);
+        }
+
+        // Voice slots follow the shared records contiguously (the walk flows straight in).
+        let first_record_off = size;
+
+        // Slot template: within-slot offsets of each voice record.
+        let mut voice_rec_within = Vec::with_capacity(voice.len());
+        let mut voice_out_within = Vec::with_capacity(voice.len());
+        let mut voice_state_within = Vec::with_capacity(voice.len());
+        let mut toff = 0usize;
+        for r in voice {
+            voice_rec_within.push(toff);
+            let state_off = align_up(toff + HEADER_WORDS * 4, STATE_ALIGN);
+            let inputs_off = align_up(state_off + r.state.len(), 4);
+            let outputs_off = align_up(inputs_off + r.inputs.len() * 4, BUF_ALIGN);
+            voice_state_within.push(state_off as u32);
+            voice_out_within.push(outputs_off as u32);
+            toff = align_up(outputs_off + r.num_outputs * block_size * F32, RECORD_ALIGN);
+        }
+        let record_stride = toff.max(RECORD_ALIGN);
+
+        size = first_record_off + record_stride * max_voices;
+        let terminator_off = size;
+        size = align_up(size + 4, RECORD_ALIGN);
+
+        let mut buf = vec![0u8; size];
+        write_u32(&mut buf, 0, block_size as u32);
+
+        // Write shared records.
+        for (i, r) in shared.iter().enumerate() {
+            let start = shared_rec_off[i];
+            let state_off = align_up(start + HEADER_WORDS * 4, STATE_ALIGN);
+            let inputs_off = align_up(state_off + r.state.len(), 4);
+            write_u32(&mut buf, start, 0);
+            write_u32(&mut buf, start + 4, r.fn_index);
+            write_u32(&mut buf, start + 8, r.state.len() as u32);
+            write_u32(&mut buf, start + 12, r.inputs.len() as u32);
+            write_u32(&mut buf, start + 16, r.num_outputs as u32);
+            buf[state_off..state_off + r.state.len()].copy_from_slice(&r.state);
+            for (k, src) in r.inputs.iter().enumerate() {
+                let buf_off = match *src {
+                    Source::Port(rec, port) => {
+                        shared_out_offsets[rec] + (port * block_size * F32) as u32
+                    }
+                    Source::Zero => zero_off as u32,
+                };
+                write_u32(&mut buf, inputs_off + k * 4, buf_off);
+            }
+        }
+
+        // Stamp each slot, then disable it.
+        for slot in 0..max_voices {
+            let slot_base = first_record_off + slot * record_stride;
+            for (i, r) in voice.iter().enumerate() {
+                let start = slot_base + voice_rec_within[i];
+                let state_off = align_up(start + HEADER_WORDS * 4, STATE_ALIGN);
+                let inputs_off = align_up(state_off + r.state.len(), 4);
+                write_u32(&mut buf, start, 0);
+                write_u32(&mut buf, start + 4, r.fn_index);
+                write_u32(&mut buf, start + 8, r.state.len() as u32);
+                write_u32(&mut buf, start + 12, r.inputs.len() as u32);
+                write_u32(&mut buf, start + 16, r.num_outputs as u32);
+                buf[state_off..state_off + r.state.len()].copy_from_slice(&r.state);
+                for (k, src) in r.inputs.iter().enumerate() {
+                    let buf_off = match *src {
+                        VoiceSource::Shared(rec, port) => {
+                            shared_out_offsets[rec] + (port * block_size * F32) as u32
+                        }
+                        VoiceSource::SourceOut(port) => {
+                            (source_out_base + slot * source_out_stride + port * block_size * F32)
+                                as u32
+                        }
+                        VoiceSource::Voice(rec, port) => {
+                            (slot_base + voice_out_within[rec] as usize + port * block_size * F32)
+                                as u32
+                        }
+                        VoiceSource::Zero => zero_off as u32,
+                    };
+                    write_u32(&mut buf, inputs_off + k * 4, buf_off);
+                }
+            }
+        }
+
+        write_u32(&mut buf, terminator_off, TERMINATOR);
+
+        let mut plan = VoicedPlan {
+            buf,
+            block_size,
+            records_start,
+            shared_out_offsets,
+            first_record_off,
+            record_stride,
+            terminator_off,
+            source_out_base,
+            source_out_stride,
+            num_source_outputs,
+            voice_out_within,
+            voice_state_within,
+            max_voices,
+        };
+        for slot in 0..max_voices {
+            plan.set_slot_active(slot, false);
+        }
+        plan
+    }
+
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub fn max_voices(&self) -> usize {
+        self.max_voices
+    }
+
+    /// Enable (skip = 0) or disable (skip = next slot) slot `slot`.
+    pub fn set_slot_active(&mut self, slot: usize, active: bool) {
+        let off = self.first_record_off + slot * self.record_stride;
+        let skip = if active {
+            0
+        } else {
+            (self.first_record_off + (slot + 1) * self.record_stride) as u32
+        };
+        write_u32(&mut self.buf, off, skip);
+    }
+
+    /// A shared record's output buffer.
+    pub fn shared_output(&self, record: usize, port: usize, frames: usize) -> &[f32] {
+        let off = self.shared_out_offsets[record] as usize + port * self.block_size * F32;
+        self.slice_at(off, frames)
+    }
+
+    /// Slot `slot`'s source-output buffer for `port` (written by the source before the walk).
+    pub fn source_output_mut(&mut self, slot: usize, port: usize, frames: usize) -> &mut [f32] {
+        let off = self.source_out_base + slot * self.source_out_stride + port * self.block_size * F32;
+        let ptr = self.buf[off..].as_mut_ptr() as *mut f32;
+        unsafe { std::slice::from_raw_parts_mut(ptr, frames) }
+    }
+
+    /// A per-voice record's output buffer in slot `slot`.
+    pub fn voice_output(&self, slot: usize, record: usize, port: usize, frames: usize) -> &[f32] {
+        let off = self.first_record_off
+            + slot * self.record_stride
+            + self.voice_out_within[record] as usize
+            + port * self.block_size * F32;
+        self.slice_at(off, frames)
+    }
+
+    fn slice_at(&self, off: usize, frames: usize) -> &[f32] {
+        let ptr = self.buf[off..].as_ptr() as *const f32;
+        unsafe { std::slice::from_raw_parts(ptr, frames) }
+    }
+
+    /// Overwrite a slot's voice-record state with fresh bytes (on voice spawn). `state.len()`
+    /// must match the record's state size.
+    pub fn set_voice_state(&mut self, slot: usize, record: usize, state: &[u8]) {
+        let off = self.first_record_off
+            + slot * self.record_stride
+            + self.voice_state_within[record] as usize;
+        self.buf[off..off + state.len()].copy_from_slice(state);
+    }
+
+    /// Zero a slot's source-output buffers (on spawn, before the source writes).
+    pub fn clear_source_outputs(&mut self, slot: usize, frames: usize) {
+        for port in 0..self.num_source_outputs {
+            self.source_output_mut(slot, port, frames).fill(0.0);
+        }
+    }
+
+    /// Walk the plan once. `slot_alive[k]` is set to whether any record in active slot `k`
+    /// reported `Tail::Active` (for the engine's free-on-`Done` decision). Disabled slots stay
+    /// `false`. `slot_alive.len()` must be `max_voices`.
+    pub fn run(
+        &mut self,
+        fns: &[ProcessFn],
+        sample_rate: f32,
+        time: f64,
+        frames: usize,
+        slot_alive: &mut [bool],
+    ) {
+        let frames = frames.min(self.block_size);
+        let ctx = TickCtx {
+            frames,
+            block_size: self.block_size,
+            sample_rate,
+            time,
+        };
+        slot_alive.iter_mut().for_each(|a| *a = false);
+        let base = self.buf.as_mut_ptr();
+        let mut off = self.records_start;
+        loop {
+            let skip = unsafe { read_u32_ptr(base, off) };
+            if skip == TERMINATOR {
+                break;
+            }
+            if skip != 0 {
+                off = skip as usize;
+                continue;
+            }
+            let fn_index = unsafe { read_u32_ptr(base, off + 4) };
+            let state_size = unsafe { read_u32_ptr(base, off + 8) } as usize;
+            let num_inputs = unsafe { read_u32_ptr(base, off + 12) };
+            let num_outputs = unsafe { read_u32_ptr(base, off + 16) };
+
+            let state_off = align_up(off + HEADER_WORDS * 4, STATE_ALIGN);
+            let inputs_off = align_up(state_off + state_size, 4);
+            let outputs_off = align_up(inputs_off + num_inputs as usize * 4, BUF_ALIGN);
+
+            let rec = Record {
+                state: state_off as u32,
+                inputs: inputs_off as u32,
+                num_inputs,
+                outputs: outputs_off as u32,
+                num_outputs,
+            };
+            let tail = unsafe { fns[fn_index as usize](base, &ctx, &rec) };
+
+            if off >= self.first_record_off && off < self.terminator_off {
+                let slot = (off - self.first_record_off) / self.record_stride;
+                if matches!(tail, Tail::Active) {
+                    slot_alive[slot] = true;
+                }
+            }
+
+            let rec_end = outputs_off + num_outputs as usize * self.block_size * F32;
+            off = align_up(rec_end, RECORD_ALIGN);
+        }
+    }
+}
+
 /// Pack a `Copy` POD value into state bytes for a [`RecordSpec`].
 pub fn state_bytes<T: Copy>(value: T) -> Vec<u8> {
     let size = std::mem::size_of::<T>();
@@ -317,6 +626,46 @@ mod tests {
         let mut plan = Plan::build(8, &records);
         plan.run(fns, 44100.0, 0.0, 8);
         assert_eq!(plan.buffer_at(plan.output_offset(1, 0), 8), &[6.0; 8]); // 2.0 * 3.0
+    }
+
+    #[test]
+    fn voices_are_isolated_and_summed_over_active_slots() {
+        // Each voice runs one `gain` record reading its slot's source output (port 0) times 2.
+        let fns: &[ProcessFn] = &[gain_fn];
+        let voice = vec![VoiceRecordSpec {
+            fn_index: 0,
+            state: state_bytes(GainState { gain: 2.0 }),
+            inputs: vec![VoiceSource::SourceOut(0)],
+            num_outputs: 1,
+        }];
+        let mut plan = VoicedPlan::build(4, &[], 1, &voice, 3);
+        let mut alive = [false; 3];
+
+        // Activate two voices with different source pitches.
+        plan.set_slot_active(0, true);
+        plan.set_slot_active(1, true);
+        plan.source_output_mut(0, 0, 4).fill(2.0);
+        plan.source_output_mut(1, 0, 4).fill(3.0);
+
+        plan.run(fns, 44100.0, 0.0, 4, &mut alive);
+
+        // Isolation: each slot's record sees only its own source output.
+        assert_eq!(plan.voice_output(0, 0, 0, 4), &[4.0; 4]); // 2.0 * 2
+        assert_eq!(plan.voice_output(1, 0, 0, 4), &[6.0; 4]); // 3.0 * 2
+
+        // Sum over active slots = 4 + 6 = 10. Slot 2 is disabled (not summed).
+        let sum: f32 = (0..3)
+            .map(|s| plan.voice_output(s, 0, 0, 4)[0])
+            .zip([true, true, false])
+            .map(|(v, active)| if active { v } else { 0.0 })
+            .sum();
+        assert_eq!(sum, 10.0);
+
+        // Disable slot 1: the walker jumps it, so its output is stale but not summed; slot 0 runs.
+        plan.set_slot_active(1, false);
+        plan.source_output_mut(0, 0, 4).fill(5.0);
+        plan.run(fns, 44100.0, 0.0, 4, &mut alive);
+        assert_eq!(plan.voice_output(0, 0, 0, 4), &[10.0; 4]); // 5.0 * 2, slot 0 re-ran
     }
 
     #[test]

@@ -3,12 +3,12 @@
 //! See the `synth` dev repo (`docs/architecture/`) for the design.
 
 pub mod audio;
-pub mod engine;
+pub mod midi_keyboard;
 pub mod model;
-pub mod modules;
+pub mod module;
 pub mod plan;
+pub mod plan_engine;
 pub mod processing;
-pub mod registry;
 pub mod wav;
 
 /// Prints a greeting to stdout. Used to smoke-test cross-crate wiring:
