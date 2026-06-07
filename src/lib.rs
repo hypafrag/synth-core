@@ -8,6 +8,7 @@ pub mod model;
 pub mod modules;
 pub mod processing;
 pub mod registry;
+pub mod wav;
 
 /// Prints a greeting to stdout. Used to smoke-test cross-crate wiring:
 /// the `synth-cli` and `synth-ui` binaries call this and exit.
