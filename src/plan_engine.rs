@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use crate::model::Patch;
-use crate::module::{PolyphonicModule, Registry, SlotManager, SourceCtx};
+use crate::module::{OsPermission, PolyphonicModule, Registry, SlotManager, SourceCtx, SourceError};
 use crate::plan::{Plan, ProcessFn, RecordSpec, Source, VoiceRecordSpec, VoiceSource, VoicedPlan};
 
 const AUDIO_OUTPUT: &str = "audio_output";
@@ -21,6 +21,9 @@ const DEFAULT_MAX_VOICES: usize = 16;
 #[derive(Debug)]
 pub enum EngineError {
     Build { node: String, msg: String },
+    /// A module requires an OS permission that has not been granted.  The host is responsible
+    /// for composing the user-facing message (the correct app name differs between CLI and UI).
+    PermissionDenied { node: String, permission: OsPermission },
     UnknownNode(String),
     UnknownPort { node: String, port: String },
     NoAudioOutput,
@@ -32,6 +35,12 @@ impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EngineError::Build { node, msg } => write!(f, "node '{node}': {msg}"),
+            EngineError::PermissionDenied { node, permission } => {
+                let name = match permission {
+                    OsPermission::Accessibility => "Accessibility",
+                };
+                write!(f, "node '{node}': requires {name} permission")
+            }
             EngineError::UnknownNode(n) => write!(f, "wire references unknown node '{n}'"),
             EngineError::UnknownPort { node, port } => {
                 write!(f, "node '{node}' has no port '{port}'")
@@ -457,10 +466,21 @@ fn build_poly(
         &voice,
         DEFAULT_MAX_VOICES,
     );
+    let source_node = &patch.nodes[source];
     let source_module = (registry
-        .source(&patch.nodes[source].ty)
+        .source(&source_node.ty)
         .expect("source checked")
-        .make)(&patch.nodes[source].params);
+        .make)(&source_node.params)
+        .map_err(|e| match e {
+            SourceError::PermissionDenied(p) => EngineError::PermissionDenied {
+                node: source_node.id.clone(),
+                permission: p,
+            },
+            SourceError::Other(msg) => EngineError::Build {
+                node: source_node.id.clone(),
+                msg,
+            },
+        })?;
 
     Ok(Poly {
         plan,
@@ -635,13 +655,13 @@ wires:
                 outputs: vec![PortDesc::sample("pitch"), PortDesc::sample("gate")],
             }
         }
-        fn make(_p: &Params) -> ScriptKeys {
-            ScriptKeys {
+        fn make(_p: &Params) -> Result<ScriptKeys, crate::module::SourceError> {
+            Ok(ScriptKeys {
                 block: 0,
                 release_at: 2,
                 pitch: 0.25,
                 voice: None,
-            }
+            })
         }
     }
 

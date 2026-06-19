@@ -11,7 +11,7 @@ use midir::{MidiInput, MidiInputConnection};
 use rtrb::{Consumer, RingBuffer};
 
 use crate::model::Params;
-use crate::module::{ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceType, VoiceId};
+use crate::module::{ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceError, SourceType, VoiceId};
 use crate::processing::Tail;
 
 const QUEUE_CAPACITY: usize = 1024;
@@ -165,8 +165,8 @@ impl SourceType for MidiKeyboardType {
         }
     }
 
-    fn make(params: &Params) -> MidiKeyboard {
-        open(params)
+    fn make(params: &Params) -> Result<MidiKeyboard, SourceError> {
+        Ok(open(params))
     }
 }
 
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn builds_without_a_device() {
         // make() must never fail the build even with no MIDI hardware.
-        let kb = MidiKeyboardType::make(&Params::new());
+        let kb = MidiKeyboardType::make(&Params::new()).unwrap();
         assert!(kb.held.is_empty());
     }
 }

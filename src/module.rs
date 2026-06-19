@@ -228,26 +228,44 @@ pub trait PolyphonicModule: Send {
     fn process(&mut self, ctx: &mut SourceCtx) -> Tail;
 }
 
+/// An OS-level permission a module may require.  The host (CLI, UI) resolves this to a
+/// human-readable message appropriate for its context — the core never produces user strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OsPermission {
+    /// macOS Accessibility (needed for global key-state polling via `device_query`).
+    Accessibility,
+}
+
+/// Error returned by [`SourceType::make`].  Carries structured facts; no user-facing strings.
+#[derive(Debug)]
+pub enum SourceError {
+    PermissionDenied(OsPermission),
+    Other(String),
+}
+
 /// The static description + constructor of a voice-source type (the source analogue of
 /// [`ModuleType`]).
 pub trait SourceType {
     type Module: PolyphonicModule + 'static;
     /// Output ports (e.g. pitch/gate/velocity); a source has no inputs.
     fn describe(params: &Params) -> ModuleDesc;
-    fn make(params: &Params) -> Self::Module;
+    /// Construct the module, or return a structured [`SourceError`].  The engine surfaces this
+    /// as a typed [`crate::plan_engine::EngineError`] variant; each host maps it to the
+    /// appropriate user-facing message.
+    fn make(params: &Params) -> Result<Self::Module, SourceError>;
 }
 
 /// A voice-source type erased to function pointers.
 pub struct SourceEntry {
     pub describe: fn(&Params) -> ModuleDesc,
-    pub make: fn(&Params) -> Box<dyn PolyphonicModule>,
+    pub make: fn(&Params) -> Result<Box<dyn PolyphonicModule>, SourceError>,
 }
 
 impl SourceEntry {
     pub fn of<S: SourceType>() -> Self {
         Self {
             describe: S::describe,
-            make: |p| Box::new(S::make(p)),
+            make: |p| S::make(p).map(|m| Box::new(m) as Box<dyn PolyphonicModule>),
         }
     }
 }
@@ -293,6 +311,7 @@ impl Registry {
         r.register::<builtins::Range>("range");
         r.register::<builtins::Mul>("mul");
         r.register::<builtins::Adsr>("adsr_envelope");
+        r.register_source::<crate::ansi_keyboard::AnsiKeyboardType>("ansi_keyboard");
         r.register_source::<crate::midi_keyboard::MidiKeyboardType>("midi_keyboard");
         r
     }
