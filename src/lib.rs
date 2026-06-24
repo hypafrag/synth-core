@@ -2,11 +2,10 @@
 //!
 //! See the `synth` dev repo (`docs/architecture/`) for the design.
 
-pub mod ansi_keyboard;
 pub mod audio;
-pub mod midi_keyboard;
 pub mod model;
 pub mod module;
+pub mod modules;
 pub mod plan;
 pub mod plan_engine;
 pub mod processing;
