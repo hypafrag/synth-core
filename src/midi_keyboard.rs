@@ -153,6 +153,7 @@ pub struct MidiKeyboardType;
 
 impl SourceType for MidiKeyboardType {
     type Module = MidiKeyboard;
+    const ICON: crate::module::Icon = crate::module::icons::MIDI_KEYBOARD;
 
     fn describe(_params: &Params) -> ModuleDesc {
         ModuleDesc {

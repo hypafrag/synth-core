@@ -231,6 +231,7 @@ pub struct AnsiKeyboardType;
 
 impl SourceType for AnsiKeyboardType {
     type Module = AnsiKeyboard;
+    const ICON: crate::module::Icon = crate::module::icons::ANSI_KEYBOARD;
 
     fn describe(_params: &Params) -> ModuleDesc {
         ModuleDesc {
