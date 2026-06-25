@@ -7,4 +7,6 @@ pub mod icons;
 pub mod midi_keyboard;
 pub mod mul;
 pub mod range;
+pub mod sawtooth_generator;
 pub mod sine_generator;
+pub mod square_generator;

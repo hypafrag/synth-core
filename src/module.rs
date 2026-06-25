@@ -341,6 +341,8 @@ impl Registry {
         let mut r = Self::new();
         r.register::<crate::modules::const_generator::Const>("const_generator");
         r.register::<crate::modules::sine_generator::Sine>("sine_generator");
+        r.register::<crate::modules::sawtooth_generator::Sawtooth>("sawtooth_generator");
+        r.register::<crate::modules::square_generator::Square>("square_generator");
         r.register::<crate::modules::range::Range>("range");
         r.register::<crate::modules::mul::Mul>("mul");
         r.register::<crate::modules::adsr_envelope::Adsr>("adsr_envelope");
