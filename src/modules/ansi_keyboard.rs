@@ -10,10 +10,13 @@
 //! Shift transposes new notes +1 octave; Ctrl transposes −1 octave; both together cancel out.
 //! Already-held notes keep their original pitch regardless of modifier changes.
 //!
-//! **Toggle:** the backtick/grave key (`) enables and disables keyboard reading (default: off).
-//! While enabled, terminal echo is suppressed so key names don't appear in the terminal output;
-//! echo is restored when disabled or when the module is dropped.  In non-tty contexts (GUI hosts)
-//! the echo toggle is a no-op.
+//! **Mode (required `toggle` bool param, no default — each host states it):**
+//! - `toggle: true` — the backtick/grave key (`) enables and disables keyboard reading, starting
+//!   off. While enabled, terminal echo is suppressed so key names don't appear in the terminal
+//!   output; echo is restored when disabled or when the module is dropped. This is the CLI mode.
+//! - `toggle: false` — reads continuously (starts enabled) and the backtick key is ignored. GUI
+//!   hosts use this, since they gate audio with their own play/stop control. (Echo suppression is
+//!   already a no-op in non-tty contexts.)
 //!
 //! Uses `device_query` to poll OS-level key state once per audio block — works identically in
 //! CLI and GUI hosts.  On macOS the OS prompts for Accessibility permission the first time a
@@ -31,7 +34,6 @@ use crate::module::{
 use crate::processing::Tail;
 
 const DEFAULT_OCTAVE: i32 = 4;
-const DEFAULT_VELOCITY: f32 = 0.8;
 
 fn note_to_hz(note: u8) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
@@ -92,7 +94,6 @@ struct HeldVoice {
     voice: VoiceId,
     /// Captured at note-on so release is correct even if the octave changes while the key is held.
     note: u8,
-    velocity: f32,
 }
 
 pub struct AnsiKeyboard {
@@ -101,8 +102,11 @@ pub struct AnsiKeyboard {
     octave: i32,
     /// Keyed by physical key so release works correctly across octave and modifier changes.
     held: HashMap<Keycode, HeldVoice>,
-    /// Whether keyboard reading is active.  Toggled by the grave/backtick key.
+    /// Whether keyboard reading is active.  When `toggle` is set, the grave/backtick key flips this.
     enabled: bool,
+    /// Whether the backtick/grave key toggles `enabled`. When false the keyboard reads continuously
+    /// and the grave key is ignored. Set from the required `toggle` param (see module docs).
+    toggle: bool,
     /// Terminal settings saved on enable, restored on disable or drop (Unix only).
     #[cfg(unix)]
     saved_termios: Option<libc::termios>,
@@ -124,8 +128,8 @@ impl PolyphonicModule for AnsiKeyboard {
         let pressed: Vec<Keycode> = current.difference(&self.prev_keys).copied().collect();
         let released: Vec<Keycode> = self.prev_keys.difference(&current).copied().collect();
 
-        // Toggle on the press edge of grave/backtick.
-        if pressed.contains(&Keycode::Grave) {
+        // Toggle on the press edge of grave/backtick (only in toggle mode).
+        if self.toggle && pressed.contains(&Keycode::Grave) {
             self.enabled = !self.enabled;
             if self.enabled {
                 #[cfg(unix)]
@@ -179,7 +183,7 @@ impl PolyphonicModule for AnsiKeyboard {
                 ctx.release(old.voice);
             }
             if let Some(voice) = ctx.allocate() {
-                self.held.insert(key, HeldVoice { voice, note, velocity: DEFAULT_VELOCITY });
+                self.held.insert(key, HeldVoice { voice, note });
             }
         }
 
@@ -195,7 +199,6 @@ impl PolyphonicModule for AnsiKeyboard {
         for held in self.held.values() {
             ctx.voice_output(held.voice, 0)[..frames].fill(note_to_hz(held.note));
             ctx.voice_output(held.voice, 1)[..frames].fill(1.0);
-            ctx.voice_output(held.voice, 2)[..frames].fill(held.velocity);
         }
 
         Tail::Active
@@ -272,12 +275,22 @@ impl SourceType for AnsiKeyboardType {
             outputs: vec![
                 PortDesc::sample("pitch"),
                 PortDesc::sample("gate"),
-                PortDesc::sample("velocity"),
             ],
         }
     }
 
-    fn make(_params: &Params) -> Result<AnsiKeyboard, SourceError> {
+    fn make(params: &Params) -> Result<AnsiKeyboard, SourceError> {
+        // Required, no default: the host must state whether the backtick key toggles reading.
+        let toggle = params
+            .get("toggle")
+            .and_then(crate::model::ParamValue::as_bool)
+            .ok_or_else(|| {
+                SourceError::Other(
+                    "ansi_keyboard requires a `toggle` bool param (true = backtick toggles \
+                     reading, false = always on)"
+                        .to_string(),
+                )
+            })?;
         let device = DeviceState::checked_new()
             .ok_or(SourceError::PermissionDenied(OsPermission::Accessibility))?;
         Ok(AnsiKeyboard {
@@ -285,7 +298,9 @@ impl SourceType for AnsiKeyboardType {
             prev_keys: HashSet::new(),
             octave: DEFAULT_OCTAVE,
             held: HashMap::new(),
-            enabled: false,
+            // In toggle mode start off (backtick turns it on); otherwise read continuously.
+            enabled: !toggle,
+            toggle,
             #[cfg(unix)]
             saved_termios: None,
         })

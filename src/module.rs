@@ -322,6 +322,18 @@ impl Registry {
         self.sources.contains_key(type_id)
     }
 
+    /// Type ids of all registered processing modules (not voice sources). Order is unspecified
+    /// (`HashMap` iteration); callers that want a stable list should sort. Used to populate the
+    /// UI module palette.
+    pub fn module_type_ids(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
+    /// Type ids of all registered voice sources (polyphonic modules). See `module_type_ids`.
+    pub fn source_type_ids(&self) -> impl Iterator<Item = &str> {
+        self.sources.keys().map(String::as_str)
+    }
+
     /// The icon for a module or source type, if registered.
     pub fn icon(&self, type_id: &str) -> Option<Icon> {
         self.entries
@@ -391,6 +403,27 @@ pub(crate) mod test_support {
         let mut plan = Plan::build(frames, &records);
         plan.run(&fns, 100.0, 0.0, frames);
         plan.buffer_at(plan.output_offset(target, 0), frames).to_vec()
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn enumerates_builtin_modules_and_sources() {
+        let r = Registry::with_builtins();
+        let modules: Vec<&str> = r.module_type_ids().collect();
+        let sources: Vec<&str> = r.source_type_ids().collect();
+
+        // Processing modules show up in module_type_ids, not source_type_ids.
+        assert!(modules.contains(&"sine_generator"));
+        assert!(modules.contains(&"mul"));
+        assert!(!modules.contains(&"midi_keyboard"));
+
+        // Voice sources show up in source_type_ids only.
+        assert!(sources.contains(&"midi_keyboard"));
+        assert!(!sources.contains(&"sine_generator"));
     }
 }
 

@@ -84,6 +84,14 @@ impl ParamValue {
             _ => None,
         }
     }
+
+    /// Boolean value, only for `Bool`.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            ParamValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
 }
 
 /// A node's parameter map.
@@ -248,6 +256,14 @@ nodes:
         let yaml = patch.to_yaml().expect("emit");
         let again = Patch::from_yaml(&yaml).expect("reparse");
         assert_eq!(patch, again);
+    }
+
+    #[test]
+    fn as_bool_only_for_bool() {
+        assert_eq!(ParamValue::Bool(true).as_bool(), Some(true));
+        assert_eq!(ParamValue::Bool(false).as_bool(), Some(false));
+        assert_eq!(ParamValue::Int(1).as_bool(), None);
+        assert_eq!(ParamValue::Str("true".to_string()).as_bool(), None);
     }
 
     #[test]
