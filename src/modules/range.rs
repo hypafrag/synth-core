@@ -1,7 +1,7 @@
 //! `range` — maps bipolar `[-1, 1]` to `[low, high]`. Inputs: in, low, high.
 
 use crate::model::Params;
-use crate::module::{Icon, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
+use crate::module::{Icon, Inputs, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
 use crate::processing::Tail;
 
 pub struct Range;
@@ -45,11 +45,11 @@ impl ModuleType for Range {
 
     fn describe(_p: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![
+            inputs: Inputs::Fixed(vec![
                 PortDesc::sample("in"),
                 PortDesc::sample("low"),
                 PortDesc::sample("high"),
-            ],
+            ]),
             outputs: vec![PortDesc::sample("out")],
         }
     }
@@ -82,6 +82,6 @@ mod tests {
     #[test]
     fn describes_three_inputs() {
         let p = Params::new();
-        assert_eq!(Range::describe(&p).inputs.len(), 3);
+        assert_eq!(Range::describe(&p).inputs.fixed().len(), 3);
     }
 }

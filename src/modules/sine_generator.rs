@@ -3,7 +3,7 @@
 use std::f32::consts::TAU;
 
 use crate::model::Params;
-use crate::module::{Icon, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
+use crate::module::{Icon, Inputs, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
 use crate::processing::Tail;
 
 pub struct Sine;
@@ -53,7 +53,7 @@ impl ModuleType for Sine {
 
     fn describe(_p: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![PortDesc::sample("frequency"), PortDesc::sample("amplitude")],
+            inputs: Inputs::Fixed(vec![PortDesc::sample("frequency"), PortDesc::sample("amplitude")]),
             outputs: vec![PortDesc::sample("out")],
         }
     }
@@ -92,8 +92,8 @@ mod tests {
     #[test]
     fn describes_two_inputs() {
         let p = Params::new();
-        assert_eq!(Sine::describe(&p).inputs.len(), 2);
-        assert_eq!(Sine::describe(&p).inputs[0].name, "frequency");
+        assert_eq!(Sine::describe(&p).inputs.fixed().len(), 2);
+        assert_eq!(Sine::describe(&p).inputs.fixed()[0].name, "frequency");
     }
 
     #[test]

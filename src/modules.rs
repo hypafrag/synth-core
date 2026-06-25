@@ -5,6 +5,7 @@ pub mod ansi_keyboard;
 pub mod const_generator;
 pub mod icons;
 pub mod midi_keyboard;
+pub mod mix;
 pub mod mul;
 pub mod range;
 pub mod sawtooth_generator;

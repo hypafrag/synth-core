@@ -11,7 +11,7 @@ use midir::{MidiInput, MidiInputConnection};
 use rtrb::{Consumer, RingBuffer};
 
 use crate::model::Params;
-use crate::module::{ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceError, SourceType, VoiceId};
+use crate::module::{Inputs, ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceError, SourceType, VoiceId};
 use crate::processing::Tail;
 
 const QUEUE_CAPACITY: usize = 1024;
@@ -190,7 +190,7 @@ impl SourceType for MidiKeyboardType {
 
     fn describe(_params: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![],
+            inputs: Inputs::Fixed(vec![]),
             outputs: vec![
                 PortDesc::sample("pitch"),
                 PortDesc::sample("gate"),

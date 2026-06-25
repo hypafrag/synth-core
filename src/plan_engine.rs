@@ -12,7 +12,9 @@
 use std::collections::HashMap;
 
 use crate::model::Patch;
-use crate::module::{OsPermission, PolyphonicModule, Registry, SlotManager, SourceCtx, SourceError};
+use crate::module::{
+    Inputs, OsPermission, PolyphonicModule, Registry, SlotManager, SourceCtx, SourceError,
+};
 use crate::plan::{Plan, ProcessFn, RecordSpec, Source, VoiceRecordSpec, VoiceSource, VoicedPlan};
 
 const AUDIO_OUTPUT: &str = "audio_output";
@@ -254,6 +256,9 @@ fn resolve(patch: &Patch, registry: &Registry, _capacity: usize) -> Result<Resol
 
     let mut in_names: Vec<Vec<String>> = vec![Vec::new(); n];
     let mut out_names: Vec<Vec<String>> = vec![Vec::new(); n];
+    // For a variadic node, the (single) input port name; `None` for fixed nodes and the sink.
+    // A variadic node's `in_names` start empty and grow one entry per wire targeting that name.
+    let mut variadic_name: Vec<Option<String>> = vec![None; n];
     for (i, node) in patch.nodes.iter().enumerate() {
         if i == sink {
             in_names[i] = (0..channels).map(|c| format!("ch{c}")).collect();
@@ -269,7 +274,12 @@ fn resolve(patch: &Patch, registry: &Registry, _capacity: usize) -> Result<Resol
                 msg: format!("unknown module type '{}'", node.ty),
             });
         };
-        in_names[i] = desc.inputs.iter().map(|p| p.name.clone()).collect();
+        match desc.inputs {
+            Inputs::Fixed(ports) => {
+                in_names[i] = ports.into_iter().map(|p| p.name).collect();
+            }
+            Inputs::Variadic(port) => variadic_name[i] = Some(port.name),
+        }
         out_names[i] = desc.outputs.iter().map(|p| p.name.clone()).collect();
     }
 
@@ -290,15 +300,39 @@ fn resolve(patch: &Patch, registry: &Registry, _capacity: usize) -> Result<Resol
                 node: w.from.node().to_string(),
                 port: w.from.port().to_string(),
             })?;
-        let tp = in_names[ti]
-            .iter()
-            .position(|p| p == w.to.port())
-            .ok_or_else(|| EngineError::UnknownPort {
-                node: w.to.node().to_string(),
-                port: w.to.port().to_string(),
-            })?;
-        in_srcs[ti][tp] = Some((fi, fp));
+        if let Some(vname) = &variadic_name[ti] {
+            // A variadic input: each wire to its port name materializes one more input slot.
+            // Order is irrelevant — variadic modules are order-independent by contract.
+            if w.to.port() != vname {
+                return Err(EngineError::UnknownPort {
+                    node: w.to.node().to_string(),
+                    port: w.to.port().to_string(),
+                });
+            }
+            in_names[ti].push(w.to.port().to_string());
+            in_srcs[ti].push(Some((fi, fp)));
+        } else {
+            let tp = in_names[ti]
+                .iter()
+                .position(|p| p == w.to.port())
+                .ok_or_else(|| EngineError::UnknownPort {
+                    node: w.to.node().to_string(),
+                    port: w.to.port().to_string(),
+                })?;
+            in_srcs[ti][tp] = Some((fi, fp));
+        }
         edges.push((fi, ti));
+    }
+
+    // A variadic input with no wires still gets a single input — the shared zero buffer, exactly
+    // the fallback every unconnected input reads (`Source::Zero`). So a combining module with
+    // nothing wired resolves to silence through its own arithmetic (`mix` sums 0, `mul` multiplies
+    // by 0), with no module-specific default. Connected variadic ports are never padded this way.
+    for i in 0..n {
+        if let (Some(name), true) = (&variadic_name[i], in_srcs[i].is_empty()) {
+            in_names[i].push(name.clone());
+            in_srcs[i].push(None);
+        }
     }
 
     let order = topo_sort(n, &edges)?;
@@ -537,7 +571,9 @@ fn topo_sort(n: usize, edges: &[(usize, usize)]) -> Result<Vec<usize>, EngineErr
 mod tests {
     use super::*;
     use crate::model::Params;
-    use crate::module::{ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceType, VoiceId};
+    use crate::module::{
+        Inputs, ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceType, VoiceId,
+    };
     use crate::processing::Tail;
 
     const PURE_TONE: &str = r#"
@@ -618,6 +654,87 @@ wires:
         assert!((device[0] - 0.5).abs() < 1e-5);
     }
 
+    #[test]
+    fn variadic_port_materializes_one_input_per_wire() {
+        // Three constants wired into `mix`'s single variadic input `in` must sum: 0.1+0.2+0.4.
+        let yaml = r#"
+nodes:
+  - id: a
+    type: const_generator
+    params: { value: 0.1 }
+  - id: b
+    type: const_generator
+    params: { value: 0.2 }
+  - id: c
+    type: const_generator
+    params: { value: 0.4 }
+  - id: sum
+    type: mix
+  - id: out
+    type: audio_output
+    params: { sample_rate: 4, channels: 1 }
+wires:
+  - { from: [a, out], to: [sum, in] }
+  - { from: [b, out], to: [sum, in] }
+  - { from: [c, out], to: [sum, in] }
+  - { from: [sum, out], to: [out, ch0] }
+"#;
+        let patch = Patch::from_yaml(yaml).unwrap();
+        let mut engine = PlanEngine::build(&patch, &Registry::with_builtins(), 64).unwrap();
+        let mut device = vec![0.0f32; 4];
+        engine.process_block(&mut device, 4);
+        for s in &device {
+            assert!((s - 0.7).abs() < 1e-5, "expected 0.7, got {s}");
+        }
+    }
+
+    #[test]
+    fn variadic_port_with_no_wires_is_silent() {
+        // A `mul` with nothing wired to its variadic input produces silence — no fabricated
+        // default signal.
+        let yaml = r#"
+nodes:
+  - id: prod
+    type: mul
+  - id: out
+    type: audio_output
+    params: { sample_rate: 4, channels: 1 }
+wires:
+  - { from: [prod, out], to: [out, ch0] }
+"#;
+        let patch = Patch::from_yaml(yaml).unwrap();
+        let mut engine = PlanEngine::build(&patch, &Registry::with_builtins(), 64).unwrap();
+        let mut device = vec![0.0f32; 4];
+        engine.process_block(&mut device, 4);
+        for s in &device {
+            assert!(s.abs() < 1e-5, "expected silence, got {s}");
+        }
+    }
+
+    #[test]
+    fn unknown_variadic_port_name_errors() {
+        let yaml = r#"
+nodes:
+  - id: a
+    type: const_generator
+    params: { value: 1.0 }
+  - id: sum
+    type: mix
+  - id: out
+    type: audio_output
+    params: { channels: 1 }
+wires:
+  - { from: [a, out], to: [sum, wrong] }
+  - { from: [sum, out], to: [out, ch0] }
+"#;
+        let patch = Patch::from_yaml(yaml).unwrap();
+        let result = PlanEngine::build(&patch, &Registry::with_builtins(), 64);
+        assert!(matches!(
+            result,
+            Err(EngineError::UnknownPort { port, .. }) if port == "wrong"
+        ));
+    }
+
     // A scripted voice source: plays `pitch` (held) on block 0, releases on block `release_at`.
     struct ScriptKeys {
         block: u64,
@@ -651,7 +768,7 @@ wires:
         type Module = ScriptKeys;
         fn describe(_p: &Params) -> ModuleDesc {
             ModuleDesc {
-                inputs: vec![],
+                inputs: Inputs::Fixed(vec![]),
                 outputs: vec![PortDesc::sample("pitch"), PortDesc::sample("gate")],
             }
         }
@@ -684,8 +801,8 @@ nodes:
     type: audio_output
     params: { sample_rate: 100, channels: 1 }
 wires:
-  - { from: [keys, pitch], to: [vca, a] }
-  - { from: [keys, gate],  to: [vca, b] }
+  - { from: [keys, pitch], to: [vca, in] }
+  - { from: [keys, gate],  to: [vca, in] }
   - { from: [vca, out], to: [out, ch0] }
 "#;
         let patch = Patch::from_yaml(yaml).unwrap();

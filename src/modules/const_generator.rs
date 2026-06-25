@@ -1,7 +1,7 @@
 //! `const_generator` — emits a constant. Param `value`.
 
 use crate::model::Params;
-use crate::module::{Icon, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
+use crate::module::{Icon, Inputs, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
 use crate::processing::Tail;
 
 pub struct Const;
@@ -51,7 +51,7 @@ impl ModuleType for Const {
 
     fn describe(_p: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![],
+            inputs: Inputs::Fixed(vec![]),
             outputs: vec![PortDesc::sample("out")],
         }
     }

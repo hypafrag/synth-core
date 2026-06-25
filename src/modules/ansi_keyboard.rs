@@ -28,8 +28,8 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 
 use crate::model::Params;
 use crate::module::{
-    ModuleDesc, OsPermission, PolyphonicModule, PortDesc, SourceCtx, SourceError, SourceType,
-    VoiceId,
+    Inputs, ModuleDesc, OsPermission, PolyphonicModule, PortDesc, SourceCtx, SourceError,
+    SourceType, VoiceId,
 };
 use crate::processing::Tail;
 
@@ -271,7 +271,7 @@ impl SourceType for AnsiKeyboardType {
 
     fn describe(_params: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![],
+            inputs: Inputs::Fixed(vec![]),
             outputs: vec![
                 PortDesc::sample("pitch"),
                 PortDesc::sample("gate"),

@@ -4,7 +4,7 @@
 use std::f32::consts::{PI, TAU};
 
 use crate::model::Params;
-use crate::module::{Icon, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
+use crate::module::{Icon, Inputs, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
 use crate::processing::Tail;
 
 pub struct Square;
@@ -54,7 +54,7 @@ impl ModuleType for Square {
 
     fn describe(_p: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![PortDesc::sample("frequency"), PortDesc::sample("amplitude")],
+            inputs: Inputs::Fixed(vec![PortDesc::sample("frequency"), PortDesc::sample("amplitude")]),
             outputs: vec![PortDesc::sample("out")],
         }
     }

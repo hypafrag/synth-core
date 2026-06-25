@@ -3,7 +3,7 @@
 //! completes, so it keeps a released voice alive through its tail.
 
 use crate::model::Params;
-use crate::module::{Icon, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
+use crate::module::{Icon, Inputs, ModuleCtx, ModuleDesc, ModuleType, PortDesc};
 use crate::processing::Tail;
 
 pub struct Adsr;
@@ -58,13 +58,13 @@ impl ModuleType for Adsr {
 
     fn describe(_p: &Params) -> ModuleDesc {
         ModuleDesc {
-            inputs: vec![
+            inputs: Inputs::Fixed(vec![
                 PortDesc::sample("gate"),
                 PortDesc::sample("attack"),
                 PortDesc::sample("decay"),
                 PortDesc::sample("sustain"),
                 PortDesc::sample("release"),
-            ],
+            ]),
             outputs: vec![PortDesc::sample("out")],
         }
     }

@@ -35,9 +35,32 @@ impl PortDesc {
     }
 }
 
+/// A module's inputs: either an exact named list, or a single port that repeats.
+///
+/// A [`Inputs::Variadic`] module declares one input port that the patch may wire any number of
+/// times (by the same name); each wire materializes one input, and only connected inputs reach
+/// the engine (no padding). Its `process` **must** be order-independent (commutative and
+/// associative) over its inputs — the engine is free to materialize and compact them in any order
+/// (see `docs/architecture/10-module-contract.md`).
+pub enum Inputs {
+    Fixed(Vec<PortDesc>),
+    Variadic(PortDesc),
+}
+
+impl Inputs {
+    /// The fixed port list, or `&[]` for a variadic module (whose count comes from the wiring,
+    /// not the descriptor). Used by the UI/compiler to enumerate a node's *declared* inputs.
+    pub fn fixed(&self) -> &[PortDesc] {
+        match self {
+            Inputs::Fixed(ports) => ports,
+            Inputs::Variadic(_) => &[],
+        }
+    }
+}
+
 /// A module type's ports, given its params (ports may depend on structural params).
 pub struct ModuleDesc {
-    pub inputs: Vec<PortDesc>,
+    pub inputs: Inputs,
     pub outputs: Vec<PortDesc>,
 }
 
@@ -57,6 +80,12 @@ pub struct ModuleCtx<'p> {
 impl<'p> ModuleCtx<'p> {
     pub fn input(&self, port: usize) -> &'p [f32] {
         unsafe { plan::input(self.base, self.rec, port, self.frames) }
+    }
+
+    /// Number of materialized inputs for this record. For a variadic module this is the count of
+    /// connected wires; iterate `0..ctx.num_inputs()` rather than hard-coding port indices.
+    pub fn num_inputs(&self) -> usize {
+        self.rec.num_inputs as usize
     }
 
     pub fn output(&self, port: usize) -> &'p mut [f32] {
@@ -345,6 +374,7 @@ impl Registry {
         r.register::<crate::modules::square_generator::Square>("square_generator");
         r.register::<crate::modules::range::Range>("range");
         r.register::<crate::modules::mul::Mul>("mul");
+        r.register::<crate::modules::mix::Mix>("mix");
         r.register::<crate::modules::adsr_envelope::Adsr>("adsr_envelope");
         r.register_source::<crate::modules::ansi_keyboard::AnsiKeyboardType>("ansi_keyboard");
         r.register_source::<crate::modules::midi_keyboard::MidiKeyboardType>("midi_keyboard");
