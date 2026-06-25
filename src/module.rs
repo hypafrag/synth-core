@@ -11,12 +11,6 @@ use crate::model::Params;
 use crate::plan::{self, ProcessFn, Record, TickCtx, VoicedPlan};
 use crate::processing::Tail;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SignalKind {
-    Sample,
-    Event,
-}
-
 /// A 32×32 monochrome module icon. Each of the 32 entries is one row, top to bottom; within a row
 /// bit `(31 - x)` is pixel column `x` (so a `0b…` literal reads left-to-right as the picture).
 /// `1` = foreground, `0` = background. Pure data — no rendering dependency — so it stays
@@ -26,16 +20,17 @@ pub type Icon = [u32; 32];
 /// An all-background icon — the default when a module defines none.
 pub const BLANK_ICON: Icon = [0; 32];
 
+/// A port: a named connection point. All ports carry the one unified channel type — a continuous
+/// stream of float samples — so there is no per-port "kind" to match (see
+/// `docs/architecture/04-signal-and-ports.md`).
 pub struct PortDesc {
     pub name: String,
-    pub kind: SignalKind,
 }
 
 impl PortDesc {
     pub fn sample(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            kind: SignalKind::Sample,
         }
     }
 }
