@@ -6,6 +6,7 @@ description = "Core library of the synth modular synthesizer platform."
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+synth-macros = { path = "synth-macros" }
 cpal = "0.18.0"
 device_query = "1"
 libc = "0.2"

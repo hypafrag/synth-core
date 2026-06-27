@@ -372,6 +372,7 @@ fn build_mono(patch: &Patch, registry: &Registry, r: &Resolved, capacity: usize)
         records.push(RecordSpec {
             fn_index,
             state: (entry.init_bytes)(&nd.params),
+            params: (entry.init_params)(&nd.params),
             inputs,
             num_outputs: r.out_names[node].len(),
         });
@@ -432,6 +433,7 @@ fn build_poly(
         let entry = registry.get(&nd.ty).expect("type checked in resolve");
         let fn_index = fn_index_of(&mut fns, &mut type_to_fn, nd.ty.as_str(), entry.process);
         let state = (entry.init_bytes)(&nd.params);
+        let params = (entry.init_params)(&nd.params);
         let num_outputs = r.out_names[node].len();
 
         if is_voice[node] {
@@ -455,6 +457,7 @@ fn build_poly(
             voice.push(VoiceRecordSpec {
                 fn_index,
                 state,
+                params,
                 inputs,
                 num_outputs,
             });
@@ -470,6 +473,7 @@ fn build_poly(
             shared.push(RecordSpec {
                 fn_index,
                 state,
+                params,
                 inputs,
                 num_outputs,
             });

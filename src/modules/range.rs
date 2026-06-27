@@ -8,6 +8,7 @@ pub struct Range;
 
 impl ModuleType for Range {
     type State = ();
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -57,7 +58,7 @@ impl ModuleType for Range {
 
     fn init_state(_p: &Params) {}
 
-    fn process(_state: &mut (), ctx: &ModuleCtx) -> Tail {
+    fn process(_state: &mut (), _params: &(), ctx: &ModuleCtx) -> Tail {
         let frames = ctx.frames;
         let input = ctx.input(0);
         let low = ctx.input(1);

@@ -12,6 +12,7 @@ pub struct Mix;
 
 impl ModuleType for Mix {
     type State = ();
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -57,7 +58,7 @@ impl ModuleType for Mix {
 
     fn init_state(_p: &Params) {}
 
-    fn process(_state: &mut (), ctx: &ModuleCtx) -> Tail {
+    fn process(_state: &mut (), _params: &(), ctx: &ModuleCtx) -> Tail {
         let frames = ctx.frames;
         let out = ctx.output(0);
         // Start from silence and accumulate every connected input. With nothing connected the

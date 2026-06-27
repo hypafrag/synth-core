@@ -16,6 +16,7 @@ pub struct SineState {
 
 impl ModuleType for Sine {
     type State = SineState;
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -63,7 +64,7 @@ impl ModuleType for Sine {
         SineState { phase: 0.0 }
     }
 
-    fn process(state: &mut SineState, ctx: &ModuleCtx) -> Tail {
+    fn process(state: &mut SineState, _params: &(), ctx: &ModuleCtx) -> Tail {
         let sr = ctx.sample_rate;
         let frames = ctx.frames;
         let freq = ctx.input(0);
@@ -111,18 +112,21 @@ mod tests {
             RecordSpec {
                 fn_index: 0,
                 state: (cst.init_bytes)(&freq),
+                params: (cst.init_params)(&freq),
                 inputs: vec![],
                 num_outputs: 1,
             },
             RecordSpec {
                 fn_index: 0,
                 state: (cst.init_bytes)(&amp),
+                params: (cst.init_params)(&amp),
                 inputs: vec![],
                 num_outputs: 1,
             },
             RecordSpec {
                 fn_index: 1,
                 state: (sine.init_bytes)(&Params::new()),
+                params: (sine.init_params)(&Params::new()),
                 inputs: vec![Source::Port(0, 0), Source::Port(1, 0)],
                 num_outputs: 1,
             },

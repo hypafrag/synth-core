@@ -16,6 +16,7 @@ pub struct SawtoothState {
 
 impl ModuleType for Sawtooth {
     type State = SawtoothState;
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -63,7 +64,7 @@ impl ModuleType for Sawtooth {
         SawtoothState { phase: 0.0 }
     }
 
-    fn process(state: &mut SawtoothState, ctx: &ModuleCtx) -> Tail {
+    fn process(state: &mut SawtoothState, _params: &(), ctx: &ModuleCtx) -> Tail {
         let sr = ctx.sample_rate;
         let frames = ctx.frames;
         let freq = ctx.input(0);
@@ -100,11 +101,12 @@ mod tests {
         let freq = params(&[("value", ParamValue::Float(1.0))]);
         let amp = params(&[("value", ParamValue::Float(1.0))]);
         let records = vec![
-            RecordSpec { fn_index: 0, state: (cst.init_bytes)(&freq), inputs: vec![], num_outputs: 1 },
-            RecordSpec { fn_index: 0, state: (cst.init_bytes)(&amp), inputs: vec![], num_outputs: 1 },
+            RecordSpec { fn_index: 0, state: (cst.init_bytes)(&freq), params: (cst.init_params)(&freq), inputs: vec![], num_outputs: 1 },
+            RecordSpec { fn_index: 0, state: (cst.init_bytes)(&amp), params: (cst.init_params)(&amp), inputs: vec![], num_outputs: 1 },
             RecordSpec {
                 fn_index: 1,
                 state: (saw.init_bytes)(&Params::new()),
+                params: (saw.init_params)(&Params::new()),
                 inputs: vec![Source::Port(0, 0), Source::Port(1, 0)],
                 num_outputs: 1,
             },

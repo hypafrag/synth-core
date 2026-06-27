@@ -12,7 +12,7 @@ pub const BUF_ALIGN: usize = 64;
 pub const RECORD_ALIGN: usize = 64;
 
 const TERMINATOR: u32 = 0xFFFF_FFFF;
-const HEADER_WORDS: usize = 5; // skip, fn_index, state_size, num_inputs, num_outputs
+const HEADER_WORDS: usize = 6; // skip, fn_index, params_off, state_size, num_inputs, num_outputs
 const F32: usize = std::mem::size_of::<f32>();
 
 #[inline]
@@ -31,6 +31,8 @@ pub struct TickCtx {
 /// Resolved offsets of one record's regions, passed to its process function.
 pub struct Record {
     pub state: u32,
+    /// Byte offset of this record's read-only param block (shared across a module's voices).
+    pub params: u32,
     pub inputs: u32,
     pub num_inputs: u32,
     pub outputs: u32,
@@ -48,6 +50,15 @@ pub type ProcessFn = unsafe fn(base: *mut u8, ctx: &TickCtx, rec: &Record) -> Ta
 #[inline]
 pub unsafe fn state_mut<'a, T>(base: *mut u8, rec: &Record) -> &'a mut T {
     unsafe { &mut *(base.add(rec.state as usize) as *mut T) }
+}
+
+/// A module's read-only `params` block reinterpreted as `T`.
+///
+/// # Safety
+/// The record's params region must hold a valid, correctly-aligned `T`.
+#[inline]
+pub unsafe fn params_ref<'a, T>(base: *const u8, rec: &Record) -> &'a T {
+    unsafe { &*(base.add(rec.params as usize) as *const T) }
 }
 
 /// Input port `port` as a `frames`-long slice (resolved through its stored offset).
@@ -92,6 +103,8 @@ pub struct RecordSpec {
     pub fn_index: u32,
     /// Initial state bytes (its length is the state size).
     pub state: Vec<u8>,
+    /// Read-only param block bytes (its length is the params size; empty if the module has none).
+    pub params: Vec<u8>,
     /// One source per input port, in port order.
     pub inputs: Vec<Source>,
     pub num_outputs: usize,
@@ -113,6 +126,16 @@ impl Plan {
         let mut size = align_up(4, BUF_ALIGN);
         let zero_off = size;
         size += block_size * F32;
+
+        // Params section: one read-only param block per record, outside the walk path.
+        size = align_up(size, STATE_ALIGN);
+        let mut params_off = Vec::with_capacity(records.len());
+        for r in records {
+            let off = align_up(size, STATE_ALIGN);
+            params_off.push(off as u32);
+            size = off + r.params.len();
+        }
+
         size = align_up(size, RECORD_ALIGN);
         let records_start = size;
 
@@ -140,10 +163,13 @@ impl Plan {
 
             write_u32(&mut buf, start, 0); // skip = active
             write_u32(&mut buf, start + 4, r.fn_index);
-            write_u32(&mut buf, start + 8, r.state.len() as u32);
-            write_u32(&mut buf, start + 12, r.inputs.len() as u32);
-            write_u32(&mut buf, start + 16, r.num_outputs as u32);
+            write_u32(&mut buf, start + 8, params_off[i]);
+            write_u32(&mut buf, start + 12, r.state.len() as u32);
+            write_u32(&mut buf, start + 16, r.inputs.len() as u32);
+            write_u32(&mut buf, start + 20, r.num_outputs as u32);
 
+            let po = params_off[i] as usize;
+            buf[po..po + r.params.len()].copy_from_slice(&r.params);
             buf[state_off..state_off + r.state.len()].copy_from_slice(&r.state);
 
             for (k, src) in r.inputs.iter().enumerate() {
@@ -201,9 +227,10 @@ impl Plan {
                 continue;
             }
             let fn_index = unsafe { read_u32_ptr(base, off + 4) };
-            let state_size = unsafe { read_u32_ptr(base, off + 8) } as usize;
-            let num_inputs = unsafe { read_u32_ptr(base, off + 12) };
-            let num_outputs = unsafe { read_u32_ptr(base, off + 16) };
+            let params_off = unsafe { read_u32_ptr(base, off + 8) };
+            let state_size = unsafe { read_u32_ptr(base, off + 12) } as usize;
+            let num_inputs = unsafe { read_u32_ptr(base, off + 16) };
+            let num_outputs = unsafe { read_u32_ptr(base, off + 20) };
 
             let state_off = align_up(off + HEADER_WORDS * 4, STATE_ALIGN);
             let inputs_off = align_up(state_off + state_size, 4);
@@ -211,6 +238,7 @@ impl Plan {
 
             let rec = Record {
                 state: state_off as u32,
+                params: params_off,
                 inputs: inputs_off as u32,
                 num_inputs,
                 outputs: outputs_off as u32,
@@ -241,6 +269,8 @@ pub enum VoiceSource {
 pub struct VoiceRecordSpec {
     pub fn_index: u32,
     pub state: Vec<u8>,
+    /// Read-only param block bytes, shared by all of this module's voices (empty if none).
+    pub params: Vec<u8>,
     pub inputs: Vec<VoiceSource>,
     pub num_outputs: usize,
 }
@@ -299,6 +329,22 @@ impl VoicedPlan {
         let source_out_stride = align_up(num_source_outputs * block_size * F32, BUF_ALIGN);
         size += source_out_stride * max_voices;
 
+        // Params section: one read-only param block per shared record, then one per voice module
+        // (shared by all that module's voices). Kept outside the walk path, like the zero buffer.
+        size = align_up(size, STATE_ALIGN);
+        let mut shared_params_off = Vec::with_capacity(shared.len());
+        for r in shared {
+            let off = align_up(size, STATE_ALIGN);
+            shared_params_off.push(off as u32);
+            size = off + r.params.len();
+        }
+        let mut voice_params_off = Vec::with_capacity(voice.len());
+        for r in voice {
+            let off = align_up(size, STATE_ALIGN);
+            voice_params_off.push(off as u32);
+            size = off + r.params.len();
+        }
+
         size = align_up(size, RECORD_ALIGN);
         let records_start = size;
 
@@ -348,9 +394,12 @@ impl VoicedPlan {
             let inputs_off = align_up(state_off + r.state.len(), 4);
             write_u32(&mut buf, start, 0);
             write_u32(&mut buf, start + 4, r.fn_index);
-            write_u32(&mut buf, start + 8, r.state.len() as u32);
-            write_u32(&mut buf, start + 12, r.inputs.len() as u32);
-            write_u32(&mut buf, start + 16, r.num_outputs as u32);
+            write_u32(&mut buf, start + 8, shared_params_off[i]);
+            write_u32(&mut buf, start + 12, r.state.len() as u32);
+            write_u32(&mut buf, start + 16, r.inputs.len() as u32);
+            write_u32(&mut buf, start + 20, r.num_outputs as u32);
+            let po = shared_params_off[i] as usize;
+            buf[po..po + r.params.len()].copy_from_slice(&r.params);
             buf[state_off..state_off + r.state.len()].copy_from_slice(&r.state);
             for (k, src) in r.inputs.iter().enumerate() {
                 let buf_off = match *src {
@@ -372,9 +421,10 @@ impl VoicedPlan {
                 let inputs_off = align_up(state_off + r.state.len(), 4);
                 write_u32(&mut buf, start, 0);
                 write_u32(&mut buf, start + 4, r.fn_index);
-                write_u32(&mut buf, start + 8, r.state.len() as u32);
-                write_u32(&mut buf, start + 12, r.inputs.len() as u32);
-                write_u32(&mut buf, start + 16, r.num_outputs as u32);
+                write_u32(&mut buf, start + 8, voice_params_off[m]);
+                write_u32(&mut buf, start + 12, r.state.len() as u32);
+                write_u32(&mut buf, start + 16, r.inputs.len() as u32);
+                write_u32(&mut buf, start + 20, r.num_outputs as u32);
                 buf[state_off..state_off + r.state.len()].copy_from_slice(&r.state);
                 for (k, src) in r.inputs.iter().enumerate() {
                     let buf_off = match *src {
@@ -396,6 +446,12 @@ impl VoicedPlan {
                     write_u32(&mut buf, inputs_off + k * 4, buf_off);
                 }
             }
+        }
+
+        // Copy each voice module's param block once (shared by all its voices).
+        for (m, r) in voice.iter().enumerate() {
+            let po = voice_params_off[m] as usize;
+            buf[po..po + r.params.len()].copy_from_slice(&r.params);
         }
 
         write_u32(&mut buf, terminator_off, TERMINATOR);
@@ -518,9 +574,10 @@ impl VoicedPlan {
                 continue;
             }
             let fn_index = unsafe { read_u32_ptr(base, off + 4) };
-            let state_size = unsafe { read_u32_ptr(base, off + 8) } as usize;
-            let num_inputs = unsafe { read_u32_ptr(base, off + 12) };
-            let num_outputs = unsafe { read_u32_ptr(base, off + 16) };
+            let params_off = unsafe { read_u32_ptr(base, off + 8) };
+            let state_size = unsafe { read_u32_ptr(base, off + 12) } as usize;
+            let num_inputs = unsafe { read_u32_ptr(base, off + 16) };
+            let num_outputs = unsafe { read_u32_ptr(base, off + 20) };
 
             let state_off = align_up(off + HEADER_WORDS * 4, STATE_ALIGN);
             let inputs_off = align_up(state_off + state_size, 4);
@@ -528,6 +585,7 @@ impl VoicedPlan {
 
             let rec = Record {
                 state: state_off as u32,
+                params: params_off,
                 inputs: inputs_off as u32,
                 num_inputs,
                 outputs: outputs_off as u32,
@@ -615,12 +673,63 @@ mod tests {
         Tail::Done
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ParamBlock {
+        val: f32,
+    }
+
+    // Emits a constant read from its read-only param block (not its state).
+    unsafe fn param_fn(base: *mut u8, ctx: &TickCtx, rec: &Record) -> Tail {
+        unsafe {
+            let val = params_ref::<ParamBlock>(base, rec).val;
+            output(base, rec, 0, ctx.block_size, ctx.frames).fill(val);
+        }
+        Tail::Done
+    }
+
+    #[test]
+    fn record_reads_its_param_block() {
+        let fns: &[ProcessFn] = &[param_fn];
+        let records = vec![RecordSpec {
+            fn_index: 0,
+            state: vec![],
+            params: state_bytes(ParamBlock { val: 3.5 }),
+            inputs: vec![],
+            num_outputs: 1,
+        }];
+        let mut plan = Plan::build(4, &records);
+        plan.run(fns, 44100.0, 0.0, 4);
+        assert_eq!(plan.buffer_at(plan.output_offset(0, 0), 4), &[3.5; 4]);
+    }
+
+    #[test]
+    fn voice_param_block_is_shared_by_all_voices() {
+        // One voice module with a param block; every voice reads the same block.
+        let fns: &[ProcessFn] = &[param_fn];
+        let voice = vec![VoiceRecordSpec {
+            fn_index: 0,
+            state: vec![],
+            params: state_bytes(ParamBlock { val: 7.0 }),
+            inputs: vec![],
+            num_outputs: 1,
+        }];
+        let mut plan = VoicedPlan::build(4, &[], 0, &voice, 3);
+        let mut alive = [false; 3];
+        plan.set_slot_active(0, true);
+        plan.set_slot_active(2, true);
+        plan.run(fns, 44100.0, 0.0, 4, &mut alive);
+        assert_eq!(plan.voice_output(0, 0, 0, 4), &[7.0; 4]);
+        assert_eq!(plan.voice_output(2, 0, 0, 4), &[7.0; 4]);
+    }
+
     #[test]
     fn const_record_fills_output() {
         let fns: &[ProcessFn] = &[const_fn];
         let records = vec![RecordSpec {
             fn_index: 0,
             state: state_bytes(ConstState { value: 0.5 }),
+            params: vec![],
             inputs: vec![],
             num_outputs: 1,
         }];
@@ -636,12 +745,14 @@ mod tests {
             RecordSpec {
                 fn_index: 0,
                 state: state_bytes(ConstState { value: 2.0 }),
+                params: vec![],
                 inputs: vec![],
                 num_outputs: 1,
             },
             RecordSpec {
                 fn_index: 1,
                 state: state_bytes(GainState { gain: 3.0 }),
+                params: vec![],
                 inputs: vec![Source::Port(0, 0)],
                 num_outputs: 1,
             },
@@ -658,6 +769,7 @@ mod tests {
         let voice = vec![VoiceRecordSpec {
             fn_index: 0,
             state: state_bytes(GainState { gain: 2.0 }),
+            params: vec![],
             inputs: vec![VoiceSource::SourceOut(0)],
             num_outputs: 1,
         }];
@@ -700,12 +812,14 @@ mod tests {
             VoiceRecordSpec {
                 fn_index: 0,
                 state: state_bytes(GainState { gain: 2.0 }),
+                params: vec![],
                 inputs: vec![VoiceSource::SourceOut(0)],
                 num_outputs: 1,
             },
             VoiceRecordSpec {
                 fn_index: 0,
                 state: state_bytes(GainState { gain: 3.0 }),
+                params: vec![],
                 inputs: vec![VoiceSource::Voice(0, 0)], // reads record A's output, same slot
                 num_outputs: 1,
             },
@@ -733,6 +847,7 @@ mod tests {
         let records = vec![RecordSpec {
             fn_index: 0,
             state: state_bytes(GainState { gain: 3.0 }),
+            params: vec![],
             inputs: vec![Source::Zero],
             num_outputs: 1,
         }];

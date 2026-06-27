@@ -11,6 +11,7 @@ pub struct Mul;
 
 impl ModuleType for Mul {
     type State = ();
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -56,7 +57,7 @@ impl ModuleType for Mul {
 
     fn init_state(_p: &Params) {}
 
-    fn process(_state: &mut (), ctx: &ModuleCtx) -> Tail {
+    fn process(_state: &mut (), _params: &(), ctx: &ModuleCtx) -> Tail {
         let frames = ctx.frames;
         let out = ctx.output(0);
         // The variadic `in` always materializes at least one input: when nothing is wired the

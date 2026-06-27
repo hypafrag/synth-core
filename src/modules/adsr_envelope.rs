@@ -21,6 +21,7 @@ pub struct AdsrState {
 
 impl ModuleType for Adsr {
     type State = AdsrState;
+    type Params = ();
     const ICON: Icon = [
         0b00000000000000000000000000000000,
         0b00000000000000000000000000000000,
@@ -79,7 +80,7 @@ impl ModuleType for Adsr {
         }
     }
 
-    fn process(s: &mut AdsrState, ctx: &ModuleCtx) -> Tail {
+    fn process(s: &mut AdsrState, _params: &(), ctx: &ModuleCtx) -> Tail {
         let frames = ctx.frames;
         let dt = 1.0 / ctx.sample_rate;
         let gate = ctx.input(0);
