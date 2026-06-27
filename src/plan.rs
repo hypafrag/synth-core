@@ -245,27 +245,35 @@ pub struct VoiceRecordSpec {
     pub num_outputs: usize,
 }
 
-/// A plan with a voice source: shared (mono) records, then `max_voices` identical slots, each
-/// holding the source's per-voice output buffers plus a copy of the per-voice records.
+/// A plan with a voice source: the shared (mono) records, then the per-voice region.
 ///
-/// The walk runs the shared records, then flows through the active slots (disabled slots are
-/// jumped via their first record's skip field). The source writes each active slot's
-/// source-output buffers before the walk; the engine sums the active slots' outputs after it.
+/// The per-voice region groups records **by module**: all `max_voices` copies of one voice
+/// record sit contiguously, then the next module's, and so on — e.g. for `lfo -> tone` the
+/// layout is `lfo_v0 lfo_v1 … lfo_vN  tone_v0 tone_v1 … tone_vN`. Running a module's voices back
+/// to back keeps its `process` (and code) hot and lets the voices be batched.
+///
+/// The walk runs the shared records, then each module's voices in turn. A disabled voice's record
+/// jumps to the next voice of the same module via its skip field, so disabling voice `k` writes
+/// one skip per module. The source writes each active slot's source-output buffers before the
+/// walk; the engine sums the active voices' outputs after it.
 pub struct VoicedPlan {
     buf: Vec<u8>,
     block_size: usize,
     records_start: usize,
     shared_out_offsets: Vec<u32>,
-    // Voice region:
-    first_record_off: usize,
-    record_stride: usize,
+    // Voice region (records grouped by module — see the struct doc):
+    first_voice_off: usize,
     terminator_off: usize,
     source_out_base: usize,
     source_out_stride: usize,
     num_source_outputs: usize,
-    /// Within-slot byte offset of each voice record's port-0 output buffer.
+    /// Per voice module: absolute byte offset of its voice-0 record.
+    voice_block_base: Vec<usize>,
+    /// Per voice module: byte stride from one voice's record to the next.
+    voice_stride: Vec<usize>,
+    /// Per voice module: within-record byte offset of the port-0 output buffer.
     voice_out_within: Vec<u32>,
-    /// Within-slot byte offset of each voice record's state region.
+    /// Per voice module: within-record byte offset of the state region.
     voice_state_within: Vec<u32>,
     max_voices: usize,
 }
@@ -306,26 +314,27 @@ impl VoicedPlan {
             size = align_up(outputs_off + r.num_outputs * block_size * F32, RECORD_ALIGN);
         }
 
-        // Voice slots follow the shared records contiguously (the walk flows straight in).
-        let first_record_off = size;
+        // Voice region: one contiguous block of `max_voices` records per voice module, so a
+        // module's voices sit together (lfo_v0 … lfo_vN, then tone_v0 … tone_vN). The walk flows
+        // straight in from the shared records.
+        let first_voice_off = size;
 
-        // Slot template: within-slot offsets of each voice record.
-        let mut voice_rec_within = Vec::with_capacity(voice.len());
-        let mut voice_out_within = Vec::with_capacity(voice.len());
+        let mut voice_block_base = Vec::with_capacity(voice.len());
+        let mut voice_stride = Vec::with_capacity(voice.len());
         let mut voice_state_within = Vec::with_capacity(voice.len());
-        let mut toff = 0usize;
+        let mut voice_out_within = Vec::with_capacity(voice.len());
         for r in voice {
-            voice_rec_within.push(toff);
-            let state_off = align_up(toff + HEADER_WORDS * 4, STATE_ALIGN);
+            let base = size;
+            voice_block_base.push(base);
+            let state_off = align_up(HEADER_WORDS * 4, STATE_ALIGN);
             let inputs_off = align_up(state_off + r.state.len(), 4);
             let outputs_off = align_up(inputs_off + r.inputs.len() * 4, BUF_ALIGN);
             voice_state_within.push(state_off as u32);
             voice_out_within.push(outputs_off as u32);
-            toff = align_up(outputs_off + r.num_outputs * block_size * F32, RECORD_ALIGN);
+            let stride = align_up(outputs_off + r.num_outputs * block_size * F32, RECORD_ALIGN);
+            voice_stride.push(stride);
+            size = base + stride * max_voices;
         }
-        let record_stride = toff.max(RECORD_ALIGN);
-
-        size = first_record_off + record_stride * max_voices;
         let terminator_off = size;
         size = align_up(size + 4, RECORD_ALIGN);
 
@@ -354,12 +363,12 @@ impl VoicedPlan {
             }
         }
 
-        // Stamp each slot, then disable it.
-        for slot in 0..max_voices {
-            let slot_base = first_record_off + slot * record_stride;
-            for (i, r) in voice.iter().enumerate() {
-                let start = slot_base + voice_rec_within[i];
-                let state_off = align_up(start + HEADER_WORDS * 4, STATE_ALIGN);
+        // Stamp every voice of every module, then disable all voices. A voice record reading
+        // another voice record (`VoiceSource::Voice`) reads that module's copy *in the same slot*.
+        for (m, r) in voice.iter().enumerate() {
+            for slot in 0..max_voices {
+                let start = voice_block_base[m] + slot * voice_stride[m];
+                let state_off = start + voice_state_within[m] as usize;
                 let inputs_off = align_up(state_off + r.state.len(), 4);
                 write_u32(&mut buf, start, 0);
                 write_u32(&mut buf, start + 4, r.fn_index);
@@ -377,8 +386,10 @@ impl VoicedPlan {
                                 as u32
                         }
                         VoiceSource::Voice(rec, port) => {
-                            (slot_base + voice_out_within[rec] as usize + port * block_size * F32)
-                                as u32
+                            (voice_block_base[rec]
+                                + slot * voice_stride[rec]
+                                + voice_out_within[rec] as usize
+                                + port * block_size * F32) as u32
                         }
                         VoiceSource::Zero => zero_off as u32,
                     };
@@ -394,12 +405,13 @@ impl VoicedPlan {
             block_size,
             records_start,
             shared_out_offsets,
-            first_record_off,
-            record_stride,
+            first_voice_off,
             terminator_off,
             source_out_base,
             source_out_stride,
             num_source_outputs,
+            voice_block_base,
+            voice_stride,
             voice_out_within,
             voice_state_within,
             max_voices,
@@ -418,15 +430,18 @@ impl VoicedPlan {
         self.max_voices
     }
 
-    /// Enable (skip = 0) or disable (skip = next slot) slot `slot`.
+    /// Enable (skip = 0) or disable (skip = jump to the same module's next voice) voice `slot`.
+    /// A voice spans one record per module, so toggling it writes one skip per module.
     pub fn set_slot_active(&mut self, slot: usize, active: bool) {
-        let off = self.first_record_off + slot * self.record_stride;
-        let skip = if active {
-            0
-        } else {
-            (self.first_record_off + (slot + 1) * self.record_stride) as u32
-        };
-        write_u32(&mut self.buf, off, skip);
+        for m in 0..self.voice_block_base.len() {
+            let off = self.voice_block_base[m] + slot * self.voice_stride[m];
+            let skip = if active {
+                0
+            } else {
+                (self.voice_block_base[m] + (slot + 1) * self.voice_stride[m]) as u32
+            };
+            write_u32(&mut self.buf, off, skip);
+        }
     }
 
     /// A shared record's output buffer.
@@ -442,10 +457,10 @@ impl VoicedPlan {
         unsafe { std::slice::from_raw_parts_mut(ptr, frames) }
     }
 
-    /// A per-voice record's output buffer in slot `slot`.
+    /// A per-voice record's output buffer in voice `slot`.
     pub fn voice_output(&self, slot: usize, record: usize, port: usize, frames: usize) -> &[f32] {
-        let off = self.first_record_off
-            + slot * self.record_stride
+        let off = self.voice_block_base[record]
+            + slot * self.voice_stride[record]
             + self.voice_out_within[record] as usize
             + port * self.block_size * F32;
         self.slice_at(off, frames)
@@ -459,8 +474,8 @@ impl VoicedPlan {
     /// Overwrite a slot's voice-record state with fresh bytes (on voice spawn). `state.len()`
     /// must match the record's state size.
     pub fn set_voice_state(&mut self, slot: usize, record: usize, state: &[u8]) {
-        let off = self.first_record_off
-            + slot * self.record_stride
+        let off = self.voice_block_base[record]
+            + slot * self.voice_stride[record]
             + self.voice_state_within[record] as usize;
         self.buf[off..off + state.len()].copy_from_slice(state);
     }
@@ -520,10 +535,18 @@ impl VoicedPlan {
             };
             let tail = unsafe { fns[fn_index as usize](base, &ctx, &rec) };
 
-            if off >= self.first_record_off && off < self.terminator_off {
-                let slot = (off - self.first_record_off) / self.record_stride;
-                if matches!(tail, Tail::Active) {
-                    slot_alive[slot] = true;
+            if matches!(tail, Tail::Active)
+                && off >= self.first_voice_off
+                && off < self.terminator_off
+            {
+                // Which voice is this record? Find its module block, then the slot within it.
+                for m in 0..self.voice_block_base.len() {
+                    let base = self.voice_block_base[m];
+                    let span = self.voice_stride[m] * self.max_voices;
+                    if off >= base && off < base + span {
+                        slot_alive[(off - base) / self.voice_stride[m]] = true;
+                        break;
+                    }
                 }
             }
 
@@ -666,6 +689,42 @@ mod tests {
         plan.source_output_mut(0, 0, 4).fill(5.0);
         plan.run(fns, 44100.0, 0.0, 4, &mut alive);
         assert_eq!(plan.voice_output(0, 0, 0, 4), &[10.0; 4]); // 5.0 * 2, slot 0 re-ran
+    }
+
+    #[test]
+    fn voice_chain_reads_same_slot_upstream() {
+        // Two voice records form a chain: A = source*2, B = A*3. With records grouped by module
+        // (A0 A1 A2, then B0 B1 B2), voice K's B must read voice K's A — never another voice's.
+        let fns: &[ProcessFn] = &[gain_fn];
+        let voice = vec![
+            VoiceRecordSpec {
+                fn_index: 0,
+                state: state_bytes(GainState { gain: 2.0 }),
+                inputs: vec![VoiceSource::SourceOut(0)],
+                num_outputs: 1,
+            },
+            VoiceRecordSpec {
+                fn_index: 0,
+                state: state_bytes(GainState { gain: 3.0 }),
+                inputs: vec![VoiceSource::Voice(0, 0)], // reads record A's output, same slot
+                num_outputs: 1,
+            },
+        ];
+        let mut plan = VoicedPlan::build(4, &[], 1, &voice, 3);
+        let mut alive = [false; 3];
+
+        plan.set_slot_active(0, true);
+        plan.set_slot_active(1, true);
+        plan.source_output_mut(0, 0, 4).fill(1.0);
+        plan.source_output_mut(1, 0, 4).fill(10.0);
+
+        plan.run(fns, 44100.0, 0.0, 4, &mut alive);
+
+        // A: 1*2=2 and 10*2=20.  B: reads same slot's A, *3 => 6 and 60 (no cross-voice bleed).
+        assert_eq!(plan.voice_output(0, 0, 0, 4), &[2.0; 4]);
+        assert_eq!(plan.voice_output(1, 0, 0, 4), &[20.0; 4]);
+        assert_eq!(plan.voice_output(0, 1, 0, 4), &[6.0; 4]);
+        assert_eq!(plan.voice_output(1, 1, 0, 4), &[60.0; 4]);
     }
 
     #[test]

@@ -66,6 +66,7 @@ impl ModuleType for Adsr {
                 PortDesc::sample("release"),
             ]),
             outputs: vec![PortDesc::sample("out")],
+            params: vec![],
         }
     }
 

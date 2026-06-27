@@ -196,6 +196,7 @@ impl SourceType for MidiKeyboardType {
                 PortDesc::sample("gate"),
                 PortDesc::sample("velocity"),
             ],
+            params: vec![],
         }
     }
 

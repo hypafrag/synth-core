@@ -276,6 +276,7 @@ impl SourceType for AnsiKeyboardType {
                 PortDesc::sample("pitch"),
                 PortDesc::sample("gate"),
             ],
+            params: vec![],
         }
     }
 

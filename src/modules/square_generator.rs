@@ -56,6 +56,7 @@ impl ModuleType for Square {
         ModuleDesc {
             inputs: Inputs::Fixed(vec![PortDesc::sample("frequency"), PortDesc::sample("amplitude")]),
             outputs: vec![PortDesc::sample("out")],
+            params: vec![],
         }
     }
 

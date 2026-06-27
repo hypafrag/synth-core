@@ -51,6 +51,7 @@ impl ModuleType for Range {
                 PortDesc::sample("high"),
             ]),
             outputs: vec![PortDesc::sample("out")],
+            params: vec![],
         }
     }
 

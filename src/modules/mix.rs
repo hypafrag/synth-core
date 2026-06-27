@@ -51,6 +51,7 @@ impl ModuleType for Mix {
         ModuleDesc {
             inputs: Inputs::Variadic(PortDesc::sample("in")),
             outputs: vec![PortDesc::sample("out")],
+            params: vec![],
         }
     }
 

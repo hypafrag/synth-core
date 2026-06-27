@@ -770,6 +770,7 @@ wires:
             ModuleDesc {
                 inputs: Inputs::Fixed(vec![]),
                 outputs: vec![PortDesc::sample("pitch"), PortDesc::sample("gate")],
+                params: vec![],
             }
         }
         fn make(_p: &Params) -> Result<ScriptKeys, crate::module::SourceError> {

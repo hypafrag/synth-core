@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::Params;
+use crate::model::{ParamValue, Params};
 use crate::plan::{self, ProcessFn, Record, TickCtx, VoicedPlan};
 use crate::processing::Tail;
 
@@ -58,10 +58,37 @@ impl Inputs {
     }
 }
 
-/// A module type's ports, given its params (ports may depend on structural params).
+/// The editable kind of a [`ParamDesc`] — what widget the generic node editor builds for it
+/// (`docs/architecture/13-ui-module-api.md`). Options are owned (not `&'static`) so a module may
+/// compute them at `describe` time, e.g. enumerated audio devices.
+pub enum ParamKind {
+    /// A continuous number, optionally bounded (a numeric field / drag value).
+    Float { min: f32, max: f32 },
+    /// A whole number, optionally bounded.
+    Int { min: i64, max: i64 },
+    /// A toggle.
+    Bool,
+    /// One of a fixed set of string options (a dropdown). The stored value is the chosen string.
+    Choice(Vec<String>),
+}
+
+/// A module's non-signal configuration parameter, as the UI presents it: a stable `name` (the key
+/// in [`crate::model::Node::params`]), a display `label`, its editable `kind`, and the `default`
+/// shown when the node has no stored value. The UI builds an editor generically from this — no
+/// per-module UI code (`docs/architecture/13-ui-module-api.md`).
+pub struct ParamDesc {
+    pub name: String,
+    pub label: String,
+    pub kind: ParamKind,
+    pub default: ParamValue,
+}
+
+/// A module type's ports and editable params, given its current params (both may depend on
+/// structural/param values — e.g. enumerated device options).
 pub struct ModuleDesc {
     pub inputs: Inputs,
     pub outputs: Vec<PortDesc>,
+    pub params: Vec<ParamDesc>,
 }
 
 /// Per-tick access a module's `process` gets: timing + its input/output buffers.
