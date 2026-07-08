@@ -28,8 +28,7 @@ use device_query::{DeviceQuery, DeviceState, Keycode};
 
 use crate::model::Params;
 use crate::module::{
-    Inputs, ModuleDesc, OsPermission, PolyphonicModule, PortDesc, SourceCtx, SourceError,
-    SourceType, VoiceId,
+    Inputs, ModuleDesc, PolyphonicModule, PortDesc, SourceCtx, SourceError, SourceType, VoiceId,
 };
 use crate::processing::Tail;
 
@@ -96,8 +95,29 @@ struct HeldVoice {
     note: u8,
 }
 
+/// `device_query`'s `DeviceState` holds an `Arc<X11Connection>` on Linux whose inner raw display
+/// pointer (`*mut _XDisplay`) is neither `Send` nor `Sync`, so the auto traits don't propagate and
+/// `AnsiKeyboard` would fail the `PolyphonicModule: Send` bound. The device is constructed once and
+/// then owned exclusively by the single audio thread that runs `process`, so asserting `Send` (the
+/// only bound the trait requires) is sound. (On macOS `DeviceState` is already `Send`/`Sync`.)
+struct SendDevice(DeviceState);
+unsafe impl Send for SendDevice {}
+
+/// Construct the OS keyboard device. On macOS this uses `checked_new`, which returns `None` when
+/// Accessibility permission has not been granted; other platforms have no such gate.
+#[cfg(target_os = "macos")]
+fn new_device() -> Result<DeviceState, SourceError> {
+    DeviceState::checked_new()
+        .ok_or(SourceError::PermissionDenied(crate::module::OsPermission::Accessibility))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn new_device() -> Result<DeviceState, SourceError> {
+    Ok(DeviceState::new())
+}
+
 pub struct AnsiKeyboard {
-    device: DeviceState,
+    device: SendDevice,
     prev_keys: HashSet<Keycode>,
     octave: i32,
     /// Keyed by physical key so release works correctly across octave and modifier changes.
@@ -122,7 +142,7 @@ impl Drop for AnsiKeyboard {
 impl PolyphonicModule for AnsiKeyboard {
     fn process(&mut self, ctx: &mut SourceCtx) -> Tail {
         let frames = ctx.frames;
-        let current: HashSet<Keycode> = self.device.get_keys().into_iter().collect();
+        let current: HashSet<Keycode> = self.device.0.get_keys().into_iter().collect();
 
         // Collect edge sets up front so we don't borrow `current` and `prev_keys` simultaneously.
         let pressed: Vec<Keycode> = current.difference(&self.prev_keys).copied().collect();
@@ -292,8 +312,7 @@ impl SourceType for AnsiKeyboardType {
                         .to_string(),
                 )
             })?;
-        let device = DeviceState::checked_new()
-            .ok_or(SourceError::PermissionDenied(OsPermission::Accessibility))?;
+        let device = SendDevice(new_device()?);
         Ok(AnsiKeyboard {
             device,
             prev_keys: HashSet::new(),
