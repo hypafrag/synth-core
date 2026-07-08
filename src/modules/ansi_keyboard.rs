@@ -111,9 +111,25 @@ fn new_device() -> Result<DeviceState, SourceError> {
         .ok_or(SourceError::PermissionDenied(crate::module::OsPermission::Accessibility))
 }
 
+/// On Linux `device_query` reads global key state over X11 and its only constructor,
+/// `DeviceState::new()`, *panics* ("Could not connect to a X display") when no display is
+/// reachable — e.g. a headless machine. There is no fallible constructor on this platform, so
+/// contain the panic (silencing its default stderr dump) and turn it into a clean [`SourceError`]
+/// the host can present. On a headless box, use `midi_keyboard` instead.
 #[cfg(not(target_os = "macos"))]
 fn new_device() -> Result<DeviceState, SourceError> {
-    Ok(DeviceState::new())
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(DeviceState::new);
+    std::panic::set_hook(prev_hook);
+
+    result.map_err(|_| {
+        SourceError::Other(
+            "ansi_keyboard needs an X display to read the keyboard, but none is reachable. \
+             Set DISPLAY, or use midi_keyboard on a headless machine."
+                .to_string(),
+        )
+    })
 }
 
 pub struct AnsiKeyboard {
