@@ -33,10 +33,11 @@ pub fn run_default_output(mut engine: PlanEngine) -> Result<cpal::Stream, AudioE
     let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
 
     let channels = engine.channels();
+    let sample_rate = engine.sample_rate() as u32;
     let config = cpal::StreamConfig {
         channels: channels as u16,
-        sample_rate: engine.sample_rate() as u32,
-        buffer_size: cpal::BufferSize::Default,
+        sample_rate,
+        buffer_size: pick_buffer_size(&device, sample_rate),
     };
 
     let stream = device
@@ -53,4 +54,33 @@ pub fn run_default_output(mut engine: PlanEngine) -> Result<cpal::Stream, AudioE
 
     stream.play().map_err(|e| AudioError::Play(e.to_string()))?;
     Ok(stream)
+}
+
+/// Choose an explicit output buffer size.
+///
+/// `BufferSize::Default` leaves the period size to the backend, and on ALSA (e.g. Raspberry Pi)
+/// that period can be tiny — a few dozen frames — so the callback deadline is missed continuously
+/// and the device reports xruns even for a trivial patch. Requesting a comfortable buffer of
+/// ~20 ms, clamped to the device's supported range, gives the callback enough headroom. If the
+/// device doesn't report a range (or reports `Unknown`), fall back to the backend default.
+fn pick_buffer_size(device: &cpal::Device, sample_rate: u32) -> cpal::BufferSize {
+    use cpal::traits::DeviceTrait;
+
+    // Target ~20 ms of headroom.
+    let target = (sample_rate as f32 * 0.020) as u32;
+
+    let range = device
+        .supported_output_configs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .find_map(|c| match c.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
+            cpal::SupportedBufferSize::Unknown => None,
+        });
+
+    match range {
+        Some((min, max)) => cpal::BufferSize::Fixed(target.clamp(min, max)),
+        None => cpal::BufferSize::Default,
+    }
 }
